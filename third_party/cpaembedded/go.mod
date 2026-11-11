@@ -8,8 +8,8 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/router-for-me/CLIProxyAPI/v8 v8.0.60
 	github.com/sirupsen/logrus v1.10.2
-	github.com/tidwall/gjson v1.20.0
-	github.com/tidwall/sjson v1.2.5
+	github.com/tidwall/gjson v1.20.1
+	github.com/tidwall/sjson v1.2.7
 	golang.org/x/net v0.62.0
 	google.golang.org/protobuf v1.36.12
 )
