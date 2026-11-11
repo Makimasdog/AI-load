@@ -187,6 +187,11 @@ func (executor *upstreamExecutor) ExecuteStream(ctx context.Context, credentialI
 			return
 		}
 		saw := false
+		// 上游逐 token 下发 reasoning，客户端思考面板会一词一行；
+		// 这里合并成较大的片段再转发，正文 content 不受影响。
+		coalescer := newReasoningCoalescer(func(payload []byte) bool {
+			return send(StreamChunk{Payload: payload})
+		})
 		streamErr := consumeSSE(response.Body, func(payload []byte) error {
 			normalized, normalizeErr := normalizeStreamChunk(payload)
 			if normalizeErr != nil {
@@ -196,11 +201,12 @@ func (executor *upstreamExecutor) ExecuteStream(ctx context.Context, credentialI
 				return err
 			}
 			saw = true
-			if !send(StreamChunk{Payload: normalized}) {
+			if !coalescer.Push(normalized) {
 				return context.Canceled
 			}
 			return nil
 		})
+		coalescer.Close()
 		switch {
 		case errors.Is(streamErr, errStreamDone):
 			if !saw {

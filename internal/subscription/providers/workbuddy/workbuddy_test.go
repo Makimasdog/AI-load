@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestParseCredentialJSONShapes(t *testing.T) {
@@ -130,6 +131,60 @@ func TestNormalizeRequestBodyRewritesBlockedPromptFingerprint(t *testing.T) {
 	userText := messages[1].(map[string]any)["content"].(string)
 	if strings.Contains(strings.ToLower(userText), "you will usually use this for prs") {
 		t.Fatalf("user fingerprint remained: %q", userText)
+	}
+}
+
+func chunkJSON(delta string) []byte {
+	return []byte(`{"id":"c1","model":"hy3","choices":[{"index":0,"delta":` + delta + `,"logprobs":null,"finish_reason":""}],"usage":null}`)
+}
+
+// reasoningDeltaJSON 还原上游 reasoning chunk 的完整占位字段。
+func reasoningDeltaJSON(text string) []byte {
+	return chunkJSON(`{"content":"","reasoning_content":"` + text + `","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null}`)
+}
+
+func TestReasoningCoalescerMergesTokenDeltas(t *testing.T) {
+	var emitted []string
+	coalescer := newReasoningCoalescer(func(payload []byte) bool {
+		var chunk map[string]any
+		if err := json.Unmarshal(payload, &chunk); err != nil {
+			t.Fatalf("decode emitted: %v", err)
+		}
+		choices := chunk["choices"].([]any)
+		delta := choices[0].(map[string]any)["delta"].(map[string]any)
+		if text, ok := delta["reasoning_content"].(string); ok && text != "" {
+			emitted = append(emitted, text)
+			return true
+		}
+		emitted = append(emitted, "CONTENT:"+delta["content"].(string))
+		return true
+	})
+	tokens := []string{"We", " need", " answer", " three", " short", " steps", " quickly", " today"}
+	for _, token := range tokens {
+		if !coalescer.Push(reasoningDeltaJSON(token)) {
+			t.Fatal("push rejected")
+		}
+	}
+	coalescer.Push(chunkJSON(`{"content":"done"}`))
+	coalescer.Close()
+
+	if len(emitted) < 2 {
+		t.Fatalf("emitted = %v, want merged reasoning", emitted)
+	}
+	if emitted[0] != "We" {
+		t.Fatalf("first delta = %q, want single token without added latency", emitted[0])
+	}
+	merged := strings.Join(emitted[1:len(emitted)-1], "")
+	if merged != strings.Join(tokens[1:], "") {
+		t.Fatalf("merged reasoning = %q", merged)
+	}
+	for _, part := range emitted[1 : len(emitted)-1] {
+		if utf8.RuneCountInString(part) < 8 {
+			t.Fatalf("reasoning chunk too small: %q", part)
+		}
+	}
+	if emitted[len(emitted)-1] != "CONTENT:done" {
+		t.Fatalf("content chunk = %q", emitted[len(emitted)-1])
 	}
 }
 
