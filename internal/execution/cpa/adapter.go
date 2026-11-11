@@ -29,6 +29,7 @@ import (
 	"gpt-load/internal/subscription"
 	subscriptionproviders "gpt-load/internal/subscription/providers"
 	providerobservation "gpt-load/internal/subscription/providers/observation"
+	"gpt-load/internal/subscription/providers/trae"
 	subscriptionruntime "gpt-load/internal/subscription/runtime"
 	"gpt-load/internal/usage"
 )
@@ -88,6 +89,8 @@ func NewAdapter(credentials *subscription.CredentialManager, channels *channel.R
 			newGrokProviderBridge(),
 			newMuseProviderBridge(),
 			newWorkBuddyProviderBridge(),
+			newTraeProviderBridge(trae.CNProfile),
+			newTraeProviderBridge(trae.IntlProfile),
 			newDevinProviderBridge(),
 		),
 	}

@@ -16,6 +16,8 @@ func builtInModules() []spec.Module {
 		modules.Grok(),
 		modules.Muse(),
 		modules.WorkBuddy(),
+		modules.Trae(),
+		modules.TraeIntl(),
 		modules.Devin(),
 		modules.Anthropic(),
 		modules.Gemini(),
