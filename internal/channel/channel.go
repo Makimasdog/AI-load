@@ -29,6 +29,7 @@ const (
 	Antigravity      = spec.Antigravity
 	Grok             = spec.Grok
 	Muse             = spec.Muse
+	WorkBuddy        = spec.WorkBuddy
 	Devin            = spec.Devin
 	Anthropic        = spec.Anthropic
 	Gemini           = spec.Gemini
@@ -237,6 +238,7 @@ const (
 	ProviderAntigravity          = spec.ProviderAntigravity
 	ProviderGrok                 = spec.ProviderGrok
 	ProviderMuse                 = spec.ProviderMuse
+	ProviderWorkBuddy            = spec.ProviderWorkBuddy
 	ProviderDevin                = spec.ProviderDevin
 	ProviderAnthropic            = spec.ProviderAnthropic
 	ProviderGemini               = spec.ProviderGemini

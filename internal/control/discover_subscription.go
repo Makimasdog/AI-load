@@ -273,19 +273,44 @@ func (s *Service) discoverSubscriptionModelsForChannel(
 	}
 	discoveryContext, cancel := context.WithTimeout(ctx, s.modelDiscoveryTimeout)
 	defer cancel()
-	ids, err := s.discoverSubscriptionModels(discoveryContext, channelID, credential, target)
-	if err != nil {
-		if status := subscriptionUpstreamHTTPStatus(err); status != 0 {
-			return ModelDiscoveryResult{}, fmt.Errorf(
-				"discover upstream models: %w: %w",
-				app_errors.ErrBadGateway,
-				&subscriptionruntime.UpstreamHTTPError{StatusCode: status},
-			)
+	var ids []string
+	names := map[string]string{}
+	descriptors, namedErr := []subscriptionruntime.ModelDescriptor(nil), error(nil)
+	if s.discoverSubscriptionNamedModels != nil {
+		descriptors, namedErr = s.discoverSubscriptionNamedModels(discoveryContext, channelID, credential, target)
+	}
+	if namedErr == nil && descriptors != nil {
+		ids = make([]string, 0, len(descriptors))
+		for _, descriptor := range descriptors {
+			id := strings.TrimSpace(descriptor.ID)
+			if id == "" {
+				continue
+			}
+			ids = append(ids, id)
+			if name := strings.TrimSpace(descriptor.Name); name != "" && name != id {
+				names[id] = name
+			}
 		}
-		return ModelDiscoveryResult{}, fmt.Errorf("discover upstream models: %w", app_errors.ErrBadGateway)
+	} else {
+		discovered, err := s.discoverSubscriptionModels(discoveryContext, channelID, credential, target)
+		if err != nil {
+			return ModelDiscoveryResult{}, subscriptionDiscoveryError(err)
+		}
+		ids = discovered
 	}
 	mergeTarget := discoveryTarget{channelID: channelID}
-	return s.mergeDiscoveredModels(ctx, normalizeDiscoveredModels(ids), mergeTarget)
+	return s.mergeDiscoveredModels(ctx, normalizeDiscoveredModels(ids), mergeTarget, names)
+}
+
+func subscriptionDiscoveryError(err error) error {
+	if status := subscriptionUpstreamHTTPStatus(err); status != 0 {
+		return fmt.Errorf(
+			"discover upstream models: %w: %w",
+			app_errors.ErrBadGateway,
+			&subscriptionruntime.UpstreamHTTPError{StatusCode: status},
+		)
+	}
+	return fmt.Errorf("discover upstream models: %w", app_errors.ErrBadGateway)
 }
 
 func (s *Service) decodeStageSubscriptionCredential(channelID channel.ID, stage models.CredentialStage) (subscriptionruntime.Credential, error) {

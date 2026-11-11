@@ -15,6 +15,7 @@ func builtInModules() []spec.Module {
 		modules.Antigravity(),
 		modules.Grok(),
 		modules.Muse(),
+		modules.WorkBuddy(),
 		modules.Devin(),
 		modules.Anthropic(),
 		modules.Gemini(),

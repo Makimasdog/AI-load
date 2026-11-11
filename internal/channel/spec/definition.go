@@ -19,6 +19,7 @@ const (
 	Antigravity      ID = "antigravity"
 	Grok             ID = "grok"
 	Muse             ID = "muse"
+	WorkBuddy        ID = "workbuddy"
 	Devin            ID = "devin"
 	Anthropic        ID = "anthropic"
 	Gemini           ID = "gemini"
@@ -63,6 +64,7 @@ const (
 	ProviderAntigravity          ProviderKind = "antigravity"
 	ProviderGrok                 ProviderKind = "grok"
 	ProviderMuse                 ProviderKind = "muse"
+	ProviderWorkBuddy            ProviderKind = "workbuddy"
 	ProviderDevin                ProviderKind = "devin"
 	ProviderAnthropic            ProviderKind = "anthropic"
 	ProviderGemini               ProviderKind = "gemini"
@@ -140,6 +142,7 @@ func (kind ProviderKind) Valid() bool {
 		ProviderAntigravity,
 		ProviderGrok,
 		ProviderMuse,
+		ProviderWorkBuddy,
 		ProviderDevin,
 		ProviderAnthropic,
 		ProviderGemini,

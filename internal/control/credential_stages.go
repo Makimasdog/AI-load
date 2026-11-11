@@ -654,6 +654,8 @@ func (s *Service) beginDeviceCredentialAuthorization(
 	defer cancelBegin()
 	authorization, err := s.beginDeviceAuthorization(beginContext, channelID)
 	if err != nil {
+		logrus.WithError(err).WithField("channel_id", channelID).
+			Warn("device authorization begin failed")
 		return CredentialStageResult{}, app_errors.ErrAuthorizationUnavailable
 	}
 	now := s.now().UTC()
@@ -661,12 +663,22 @@ func (s *Service) beginDeviceCredentialAuthorization(
 	userCode := strings.TrimSpace(authorization.UserCode)
 	parsedURL, parseErr := url.Parse(verificationURL)
 	pollInterval, intervalOK := normalizeDevicePollInterval(authorization.PollInterval)
+	// 部分服务商（如 WorkBuddy）使用"打开授权页登录、服务端轮询"的流程，没有用户码；
+	// 空用户码是合法输入，只有非空时才校验字符集。
 	if parseErr != nil || !parsedURL.IsAbs() || parsedURL.Opaque != "" || parsedURL.Host == "" ||
 		!strings.EqualFold(parsedURL.Scheme, "https") || parsedURL.User != nil || parsedURL.Fragment != "" ||
-		len(verificationURL) > maxDeviceAuthorizationURL || !validDeviceAuthorizationCode(userCode) ||
+		len(verificationURL) > maxDeviceAuthorizationURL ||
+		(userCode != "" && !validDeviceAuthorizationCode(userCode)) ||
 		len(authorization.DriverState) == 0 || len(authorization.DriverState) > maxOAuthFileBytes ||
 		!intervalOK || !authorization.ExpiresAt.After(now) ||
 		authorization.ExpiresAt.After(now.Add(credentialStageDeviceMaxTTL)) {
+		logrus.WithFields(logrus.Fields{
+			"channel_id":            channelID,
+			"verification_url":      verificationURL,
+			"user_code_length":      len(userCode),
+			"driver_state_bytes":    len(authorization.DriverState),
+			"poll_interval_seconds": pollInterval.Seconds(),
+		}).Warn("device authorization challenge rejected")
 		return CredentialStageResult{}, app_errors.ErrAuthorizationUnavailable
 	}
 	nextPollAtMS := now.Add(pollInterval).UnixMilli()

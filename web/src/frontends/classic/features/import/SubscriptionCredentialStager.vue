@@ -829,7 +829,11 @@ onBeforeUnmount(() => {
           <p class="subscription-stager__manual-hint">
             {{
               stage.authorization_method === 'device_oauth'
-                ? t('import.subscription.deviceInstructions')
+                ? t(
+                    stage.user_code
+                      ? 'import.subscription.deviceInstructions'
+                      : 'import.subscription.deviceInstructionsNoCode',
+                  )
                 : t('import.subscription.manualHint', { redirectUri: callbackEndpoint(stage) })
             }}
           </p>

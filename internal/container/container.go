@@ -341,6 +341,7 @@ func newProviderAdapterRegistry(
 		{ProviderKind: channel.ProviderAntigravity, Adapter: cpa},
 		{ProviderKind: channel.ProviderGrok, Adapter: cpa},
 		{ProviderKind: channel.ProviderMuse, Adapter: cpa},
+		{ProviderKind: channel.ProviderWorkBuddy, Adapter: cpa},
 		{ProviderKind: channel.ProviderDevin, Adapter: cpa},
 	}
 	return provideradapter.NewRegistry(channels, bindings)

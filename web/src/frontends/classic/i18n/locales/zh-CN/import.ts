@@ -139,6 +139,8 @@ export default {
       manualHint:
         '本机部署会自动完成。远程部署若浏览器无法访问 {redirectUri}，请打开下面的链接授权，再粘贴浏览器最终停留的完整网址。',
       deviceInstructions: '打开授权链接并输入用户码；请保持此页面开启，授权完成后会自动继续。',
+      deviceInstructionsNoCode:
+        '打开授权链接并在浏览器中完成登录；请保持此页面开启，授权完成后会自动继续，无需输入用户码。若浏览器最后停在一段 JSON（code 0 / accounts）上，说明上游已完成登录，关闭该页即可。',
       authorizationLink: '授权链接',
       copyAuthorization: '复制链接',
       openAuthorization: '打开',

@@ -16,7 +16,7 @@ func TestRuntimeCompilesAllSubscriptionProviderCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := runtime.ChannelIDs(), []channel.ID{channel.Antigravity, channel.Claude, channel.Codex, channel.Devin, channel.Grok, channel.Muse}; !reflect.DeepEqual(got, want) {
+	if got, want := runtime.ChannelIDs(), []channel.ID{channel.Antigravity, channel.Claude, channel.Codex, channel.Devin, channel.Grok, channel.Muse, channel.WorkBuddy}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ChannelIDs() = %v, want %v", got, want)
 	}
 	tests := []struct {
@@ -32,6 +32,7 @@ func TestRuntimeCompilesAllSubscriptionProviderCapabilities(t *testing.T) {
 		{channel.Grok, string(modules.GrokSubscriptionDriver), string(modules.GrokModelDiscovery), string(modules.GrokQuotaObservation), ""},
 		{channel.Devin, string(modules.DevinSubscriptionDriver), string(modules.DevinModelDiscovery), string(modules.DevinQuotaObservation), ""},
 		{channel.Muse, string(modules.MuseSubscriptionDriver), string(modules.MuseModelDiscovery), "", ""},
+		{channel.WorkBuddy, string(modules.WorkBuddySubscriptionDriver), string(modules.WorkBuddyModelDiscovery), string(modules.WorkBuddyQuotaObservation), ""},
 	}
 	for _, test := range tests {
 		t.Run(string(test.channelID), func(t *testing.T) {
@@ -61,6 +62,9 @@ func TestRuntimeCompilesAllSubscriptionProviderCapabilities(t *testing.T) {
 	}
 	if _, ok := runtime.BrowserAuthorization(channel.Grok); ok {
 		t.Fatal("Grok unexpectedly resolves browser OAuth")
+	}
+	if device, ok := runtime.DeviceAuthorization(channel.WorkBuddy); !ok || device.ID() != modules.WorkBuddySubscriptionDriver {
+		t.Fatalf("WorkBuddy device authorization = %#v/%t", device, ok)
 	}
 }
 

@@ -335,7 +335,12 @@ func (s *Service) mergeDiscoveredModels(
 	ctx context.Context,
 	live []string,
 	target discoveryTarget,
+	displayNames ...map[string]string,
 ) (ModelDiscoveryResult, error) {
+	var names map[string]string
+	if len(displayNames) > 0 {
+		names = displayNames[0]
+	}
 	var catalogSnapshot *catalog.Snapshot
 	if s.catalogRuntime != nil {
 		catalogSnapshot = s.catalogRuntime.Load()
@@ -368,10 +373,14 @@ func (s *Service) mergeDiscoveredModels(
 			ID: id, Name: id, Sources: []string{"live"},
 			PricingStatus: pricingStatus, PricingSource: pricingSource,
 		}
-		if catalogMatch {
+		if name := strings.TrimSpace(names[id]); name != "" {
+			candidate.Name = name
+		} else if catalogMatch {
 			if name := strings.TrimSpace(model.Name); name != "" {
 				candidate.Name = name
 			}
+		}
+		if catalogMatch {
 			candidate.Sources = append(candidate.Sources, "catalog")
 		}
 		seen[id] = len(result)

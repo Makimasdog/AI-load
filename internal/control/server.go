@@ -1290,6 +1290,12 @@ func serviceErrorMessageID(
 		return "group.model_name_conflict"
 	case app_errors.ErrBadGateway.Code:
 		return "bad_gateway"
+	case app_errors.ErrAuthorizationUnavailable.Code:
+		return "authorization.unavailable"
+	case app_errors.ErrAuthorizationStateInvalid.Code:
+		return "authorization.state_invalid"
+	case app_errors.ErrAuthorizationExchangeFailed.Code:
+		return "authorization.exchange_failed"
 	default:
 		return "internal_error"
 	}

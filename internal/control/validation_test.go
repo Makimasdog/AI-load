@@ -324,6 +324,23 @@ func TestBuildGroupValidationTargetSkipsSubscriptionGroups(t *testing.T) {
 	}
 }
 
+func TestBuildGroupValidationTargetForAllowsSubscriptionProbe(t *testing.T) {
+	t.Parallel()
+
+	group := validationGroup([]protocol.Protocol{protocol.OpenAICompletions}, "model", nil)
+	group.ConnectionType = "subscription"
+	target, ok := buildGroupValidationTargetFor(group, true)
+	if !ok {
+		t.Fatal("buildGroupValidationTargetFor(subscription, true) ok = false, want true")
+	}
+	if target.model != "model" {
+		t.Fatalf("target model = %q, want %q", target.model, "model")
+	}
+	if _, ok := buildGroupValidationTargetFor(group, false); ok {
+		t.Fatal("buildGroupValidationTargetFor(subscription, false) ok = true, want false")
+	}
+}
+
 func TestValidationProtocolUsesFirstNativePresetProtocolThenConfiguredFallback(t *testing.T) {
 	t.Parallel()
 

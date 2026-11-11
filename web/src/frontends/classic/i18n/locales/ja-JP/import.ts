@@ -147,6 +147,8 @@ export default {
         'ローカル配置では自動的に完了します。リモート配置でブラウザーから {redirectUri} に到達できない場合は、下のリンクで認証し、ブラウザーが最後に表示した完全な URL を貼り付けてください。',
       deviceInstructions:
         '認証リンクを開いてユーザーコードを入力してください。このページを開いたままにすると、認証完了後に自動で続行します。',
+      deviceInstructionsNoCode:
+        '認証リンクを開いてブラウザーでログインしてください。このページを開いたままにすると自動で続行します。ユーザーコードは不要です。最後に JSON（code 0 / accounts）が表示された場合は上流でログインが完了しています。タブを閉じてください。',
       authorizationLink: '認証リンク',
       copyAuthorization: 'リンクをコピー',
       openAuthorization: '開く',

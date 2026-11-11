@@ -290,6 +290,29 @@ func TestBeginDeviceAuthorizationRejectsUnsafeChallenge(t *testing.T) {
 	}
 }
 
+func TestBeginDeviceAuthorizationAllowsChallengeWithoutUserCode(t *testing.T) {
+	t.Parallel()
+	fixture := newServiceFixture(t)
+	now := time.UnixMilli(1_800_000_000_000).UTC()
+	fixture.service.now = func() time.Time { return now }
+	fixture.service.beginDeviceAuthorization = func(context.Context, channel.ID) (subscriptionruntime.DeviceAuthorization, error) {
+		return subscriptionruntime.DeviceAuthorization{
+			VerificationURL: "https://www.workbuddy.ai/login?platform=CLI&state=abc",
+			DriverState:     []byte(`{"state":"abc"}`),
+			ExpiresAt:       now.Add(10 * time.Minute),
+			PollInterval:    2 * time.Second,
+		}, nil
+	}
+	result, err := fixture.service.BeginCredentialAuthorization(t.Context(), channel.Grok)
+	if err != nil {
+		t.Fatalf("BeginCredentialAuthorization() error = %v", err)
+	}
+	if result.UserCode != "" || result.AuthorizationURL != "https://www.workbuddy.ai/login?platform=CLI&state=abc" ||
+		result.NextPollAtMS != now.Add(2*time.Second).UnixMilli() {
+		t.Fatalf("URL-only device stage = %#v", result)
+	}
+}
+
 func TestPollDeviceAuthorizationHonorsIntervalAndPersistsPendingState(t *testing.T) {
 	t.Parallel()
 	fixture := newServiceFixture(t)

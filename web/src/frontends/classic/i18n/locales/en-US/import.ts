@@ -150,6 +150,8 @@ export default {
         'A local deployment finishes on its own. For a remote deployment where the browser cannot reach {redirectUri}, authorize with the link below and paste back the final browser URL.',
       deviceInstructions:
         'Open the authorization link and enter the user code. Keep this page open; it continues automatically when authorization finishes.',
+      deviceInstructionsNoCode:
+        'Open the authorization link and finish signing in. Keep this page open; it continues automatically, and no user code is needed. If the browser ends on a JSON page (code 0 / accounts), the upstream has completed the login; just close that tab.',
       authorizationLink: 'Authorization link',
       copyAuthorization: 'Copy link',
       openAuthorization: 'Open',

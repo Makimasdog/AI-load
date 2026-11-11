@@ -75,6 +75,7 @@ type Service struct {
 	prepareSubscriptionCredential     func(context.Context, channel.ID, execution.CredentialSnapshot, bool) (subscriptionruntime.Credential, *execution.ErrorEvidence)
 	recoverSubscriptionCredential     func(context.Context, channel.ID, execution.CredentialSnapshot) (subscriptionruntime.Credential, *execution.ErrorEvidence)
 	discoverSubscriptionModels        func(context.Context, channel.ID, subscriptionruntime.Credential, subscriptionruntime.Target) ([]string, error)
+	discoverSubscriptionNamedModels   func(context.Context, channel.ID, subscriptionruntime.Credential, subscriptionruntime.Target) ([]subscriptionruntime.ModelDescriptor, error)
 	observeSubscriptionAccount        func(context.Context, channel.ID, subscriptionruntime.Credential, subscriptionruntime.Target) (subscriptionruntime.Observation, error)
 	prepareSubscriptionResetCredit    func(context.Context, channel.ID, subscriptionruntime.Credential, subscriptionruntime.Target) (json.RawMessage, error)
 	consumeSubscriptionResetCredit    func(context.Context, channel.ID, subscriptionruntime.Credential, subscriptionruntime.Target, subscriptionruntime.ResetCreditRequest) (subscriptionruntime.ResetCreditResult, error)
@@ -237,6 +238,24 @@ func NewService(
 				return nil, app_errors.ErrValidation
 			}
 			return capability.DiscoverModels(ctx, credential, target)
+		},
+		discoverSubscriptionNamedModels: func(ctx context.Context, channelID channel.ID, credential subscriptionruntime.Credential, target subscriptionruntime.Target) ([]subscriptionruntime.ModelDescriptor, error) {
+			capability, ok := subscriptions.ModelDiscovery(channelID)
+			if !ok {
+				return nil, app_errors.ErrValidation
+			}
+			if named, supported := capability.(subscriptionruntime.NamedModelDiscovery); supported {
+				return named.DiscoverNamedModels(ctx, credential, target)
+			}
+			ids, err := capability.DiscoverModels(ctx, credential, target)
+			if err != nil {
+				return nil, err
+			}
+			descriptors := make([]subscriptionruntime.ModelDescriptor, 0, len(ids))
+			for _, id := range ids {
+				descriptors = append(descriptors, subscriptionruntime.ModelDescriptor{ID: id, Name: id})
+			}
+			return descriptors, nil
 		},
 		observeSubscriptionAccount: func(ctx context.Context, channelID channel.ID, credential subscriptionruntime.Credential, target subscriptionruntime.Target) (subscriptionruntime.Observation, error) {
 			capability, ok := subscriptions.QuotaObservation(channelID)

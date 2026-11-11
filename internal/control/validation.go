@@ -289,7 +289,11 @@ func validationAttemptProxy(
 }
 
 func buildGroupValidationTarget(group state.GroupView) (groupValidationTarget, bool) {
-	if strings.TrimSpace(group.ConnectionType) == string(models.ConnectionTypeSubscription) {
+	return buildGroupValidationTargetFor(group, false)
+}
+
+func buildGroupValidationTargetFor(group state.GroupView, allowSubscription bool) (groupValidationTarget, bool) {
+	if !allowSubscription && strings.TrimSpace(group.ConnectionType) == string(models.ConnectionTypeSubscription) {
 		return groupValidationTarget{}, false
 	}
 	if group.ChannelID == "" || group.ResolvedTarget.ChannelID != group.ChannelID ||

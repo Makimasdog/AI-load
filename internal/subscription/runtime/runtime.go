@@ -234,6 +234,20 @@ type ModelDiscovery interface {
 	DiscoverModels(context.Context, Credential, Target) ([]string, error)
 }
 
+// ModelDescriptor is one discovered model with the display name upstream
+// advertises. Name falls back to ID when the catalog has no label.
+type ModelDescriptor struct {
+	ID   string
+	Name string
+}
+
+// NamedModelDiscovery is an optional extension of ModelDiscovery. Providers
+// that can supply display names implement it; callers fall back to the plain
+// id list when they cannot.
+type NamedModelDiscovery interface {
+	DiscoverNamedModels(context.Context, Credential, Target) ([]ModelDescriptor, error)
+}
+
 // ErrObservationPayloadInvalid distinguishes an upstream payload that the
 // channel capability could not normalize from an upstream request failure.
 var ErrObservationPayloadInvalid = errors.New("subscription observation payload invalid")

@@ -14,8 +14,11 @@ export const zhCN = {
     '回调地址与当前授权会话不匹配或已使用。已完成的授权会自动同步；未完成时请使用当前链接登录。',
   callbackUnknown: '提交结果暂未确认，将自动同步授权状态，请勿重复提交同一地址。',
   deviceStep: '输入验证码并确认授权',
+  deviceStepNoCode: '在浏览器中完成登录授权',
   copyDeviceCode: '复制设备验证码',
   deviceHelp: '在授权页面输入此验证码，完成后会自动同步账号。无需粘贴回调地址。',
+  deviceHelpNoCode:
+    '打开授权链接并在浏览器中完成登录，完成后会自动同步账号，无需输入验证码。若浏览器最后停在一段 JSON（code 0 / accounts）上，说明上游已完成登录，关闭该页即可。',
   title: '订阅账号',
   connectionType: '订阅账号',
   apiKey: 'API 密钥',
@@ -130,9 +133,12 @@ export const enUS: typeof zhCN = {
   callbackUnknown:
     'Submission result is unconfirmed. Authorization status will sync automatically; do not submit this URL again.',
   deviceStep: 'Enter the device code and confirm',
+  deviceStepNoCode: 'Complete the sign-in in your browser',
   copyDeviceCode: 'Copy the device code',
   deviceHelp:
     'Enter this code on the authorization page. The account will sync automatically when complete; no callback URL is needed.',
+  deviceHelpNoCode:
+    'Open the authorization link and finish signing in. The account syncs automatically and no code is needed. If the browser ends on a JSON page (code 0 / accounts), the upstream has completed the login; just close that tab.',
   title: 'Subscription accounts',
   connectionType: 'Subscription',
   apiKey: 'API key',
@@ -248,9 +254,12 @@ export const jaJP: typeof zhCN = {
   callbackUnknown:
     '送信結果は未確認です。認証状態を自動同期するため、同じ URL を再送しないでください。',
   deviceStep: 'デバイスコードを入力して確認',
+  deviceStepNoCode: 'ブラウザーでログインを完了',
   copyDeviceCode: 'デバイスコードをコピー',
   deviceHelp:
     '認証ページでこのコードを入力してください。完了するとアカウントが自動同期されます。コールバック URL は不要です。',
+  deviceHelpNoCode:
+    '認証リンクを開いてブラウザーでログインしてください。アカウントは自動同期され、コード入力は不要です。最後に JSON（code 0 / accounts）が表示された場合は上流でログインが完了しています。タブを閉じてください。',
   title: 'サブスクリプションアカウント',
   connectionType: 'サブスクリプション',
   apiKey: 'API キー',

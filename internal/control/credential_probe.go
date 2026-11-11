@@ -27,6 +27,7 @@ import (
 	"gpt-load/internal/state"
 	stateloader "gpt-load/internal/state/loader"
 	"gpt-load/internal/storage/models"
+	subscriptionruntime "gpt-load/internal/subscription/runtime"
 )
 
 type CredentialProbeOutcome string
@@ -99,10 +100,11 @@ type credentialProbeExecution struct {
 }
 
 type credentialProbeExecutor struct {
-	decryptor credentialDecryptor
-	channels  *channel.Registry
-	executor  execution.Executor
-	now       func() time.Time
+	decryptor     credentialDecryptor
+	channels      *channel.Registry
+	subscriptions *subscriptionruntime.Runtime
+	executor      execution.Executor
+	now           func() time.Time
 }
 
 type credentialProbeFailure struct {
@@ -129,6 +131,30 @@ func newCredentialProbeExecutor(
 		executor:  executor,
 		now:       time.Now,
 	}
+}
+
+// normalizeCredential 按连接类型选择凭据规范：API Key 渠道走渠道字段 schema，
+// 订阅渠道的凭据不是声明式字段，而是由订阅 driver 解析。
+func (probe *credentialProbeExecutor) normalizeCredential(
+	group state.GroupView,
+	plaintext string,
+) ([]byte, string, error) {
+	if probe.subscriptions != nil &&
+		strings.TrimSpace(group.ConnectionType) == string(models.ConnectionTypeSubscription) {
+		if driver, ok := probe.subscriptions.Driver(group.ChannelID); ok {
+			credential, err := driver.Parse([]byte(plaintext))
+			if err != nil {
+				return nil, "", err
+			}
+			return credential.Canonical(), "", nil
+		}
+	}
+	credential, err := normalizeStoredCredential(probe.channels, group.ChannelID, plaintext)
+	if err != nil {
+		return nil, "", err
+	}
+	apiKey, _ := credential.Value("api_key")
+	return credential.CanonicalJSON(), apiKey, nil
 }
 
 func (probe *credentialProbeExecutor) Probe(
@@ -159,7 +185,7 @@ func (probe *credentialProbeExecutor) Probe(
 			app_errors.ErrInternalServer,
 		)
 	}
-	credential, err := normalizeStoredCredential(probe.channels, group.ChannelID, plaintext)
+	credentialJSON, apiKey, err := probe.normalizeCredential(group, plaintext)
 	plaintext = ""
 	if err != nil {
 		return credentialProbeExecution{}, newCredentialProbeFailure(
@@ -167,7 +193,6 @@ func (probe *credentialProbeExecutor) Probe(
 			app_errors.ErrInternalServer,
 		)
 	}
-	apiKey, _ := credential.Value("api_key")
 	proxy, proxyFingerprint, err := validationAttemptProxy(probe.decryptor, group.Proxy, ref)
 	if err != nil {
 		return credentialProbeExecution{}, newCredentialProbeFailure(
@@ -225,7 +250,7 @@ func (probe *credentialProbeExecutor) Probe(
 				ref.ID,
 				version,
 				generation,
-				credential.CanonicalJSON(),
+				credentialJSON,
 			),
 			Proxy: proxy, ProxyFingerprint: proxyFingerprint,
 		})
@@ -413,6 +438,7 @@ func (s *Service) TestGroupCredential(
 	}
 
 	probe := newCredentialProbeExecutor(s.encryption, s.channelRegistry, s.executor)
+	probe.subscriptions = s.subscriptions
 	executed, err := probe.Probe(ctx, group, target, credential.ref)
 	if err != nil {
 		return CredentialProbeResponse{}, err
@@ -471,9 +497,6 @@ func (s *Service) captureCredentialProbe(
 	if err != nil {
 		return state.GroupView{}, groupValidationTarget{}, credentialProbeCredential{}, err
 	}
-	if normalizeGroupConnectionType(groupRow.ConnectionType) == models.ConnectionTypeSubscription {
-		return state.GroupView{}, groupValidationTarget{}, credentialProbeCredential{}, app_errors.ErrForbidden
-	}
 	var credentialRow models.Credential
 	if err := s.db.WithContext(ctx).
 		Where("id = ? AND group_id = ?", credentialID, groupID).
@@ -529,7 +552,7 @@ func (s *Service) captureCredentialProbe(
 			credentialID,
 		)
 	}
-	baseTarget, baseValid := buildGroupValidationTarget(group)
+	baseTarget, baseValid := buildGroupValidationTargetFor(group, true)
 	probeGroup := group
 	if request.Protocol.Set {
 		probeGroup.ValidationProtocol = request.Protocol.Value
@@ -537,7 +560,7 @@ func (s *Service) captureCredentialProbe(
 	if request.Model.Set {
 		probeGroup.ValidationModel = request.Model.Value
 	}
-	target, valid := buildGroupValidationTarget(probeGroup)
+	target, valid := buildGroupValidationTargetFor(probeGroup, true)
 	if baseValid {
 		target.signature = baseTarget.signature
 	}
@@ -587,7 +610,7 @@ func (s *Service) currentCredentialProbeRestoreProof(
 		if !exists {
 			return false
 		}
-		currentTarget, valid := buildGroupValidationTarget(group)
+		currentTarget, valid := buildGroupValidationTargetFor(group, true)
 		if !valid || currentTarget.signature != testedSignature {
 			return false
 		}

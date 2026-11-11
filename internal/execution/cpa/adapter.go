@@ -87,6 +87,7 @@ func NewAdapter(credentials *subscription.CredentialManager, channels *channel.R
 			newAntigravityProviderBridge(),
 			newGrokProviderBridge(),
 			newMuseProviderBridge(),
+			newWorkBuddyProviderBridge(),
 			newDevinProviderBridge(),
 		),
 	}
@@ -587,7 +588,9 @@ func (a *Adapter) validateSpec(spec execution.AttemptSpec) (providerBridge, stri
 		}); err != nil {
 			return nil, "", fmt.Errorf("invalid Images request: %w", err)
 		}
-	} else if !json.Valid(spec.Body) {
+	} else if spec.Operation != execution.OperationProbe && !json.Valid(spec.Body) {
+		// Probe attempts intentionally carry no body; the provider bridge
+		// synthesizes the smallest real request for the target model.
 		return nil, "", fmt.Errorf("subscription request body must be JSON")
 	}
 	baseURL, err := resolvedTargetBaseURL(target.TargetConfig)

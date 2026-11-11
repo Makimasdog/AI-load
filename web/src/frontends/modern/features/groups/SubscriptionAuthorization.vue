@@ -139,7 +139,7 @@ async function submitPastedCallback(): Promise<void> {
     <section class="modern-subscription-auth-step">
       <h4>
         <span aria-hidden="true">2</span
-        >{{ t(device ? 'subscriptions.deviceStep' : 'subscriptions.callbackStep') }}
+        >{{ t(device ? (stage.userCode ? 'subscriptions.deviceStep' : 'subscriptions.deviceStepNoCode') : 'subscriptions.callbackStep') }}
         <AppIconButton
           v-if="!device"
           touchable
@@ -153,7 +153,7 @@ async function submitPastedCallback(): Promise<void> {
         <div v-if="stage.userCode" class="modern-subscription-device-code">
           <AppCopyValue :value="stage.userCode" :label="t('subscriptions.copyDeviceCode')" wrap />
         </div>
-        <p class="modern-subscription-auth-help">{{ t('subscriptions.deviceHelp') }}</p>
+        <p class="modern-subscription-auth-help">{{ t(stage.userCode ? 'subscriptions.deviceHelp' : 'subscriptions.deviceHelpNoCode') }}</p>
       </template>
       <template v-else>
         <AppTextArea

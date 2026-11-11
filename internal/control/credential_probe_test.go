@@ -727,18 +727,75 @@ func TestRestoreTestedGroupCredentialRejectsStaleProofWithoutMutation(t *testing
 	}
 }
 
-func TestGroupCredentialProbeRejectsSubscriptionGroup(t *testing.T) {
+func newWorkBuddySubscriptionCredentialFixture(t *testing.T) (serviceFixture, uint, uint) {
+	t.Helper()
+	fixture := newServiceFixture(t)
+	driver, err := fixture.service.subscriptionDriver(channel.WorkBuddy)
+	if err != nil {
+		t.Fatalf("subscription driver: %v", err)
+	}
+	credential, err := driver.Parse([]byte(observationJSON(t, map[string]string{
+		"type": "workbuddy", "access_token": "wb-access-token",
+		"refresh_token": "wb-refresh-token", "uid": "wb-uid",
+		"email": "workbuddy@example.com",
+	})))
+	if err != nil {
+		t.Fatalf("parse WorkBuddy credential: %v", err)
+	}
+	payload, err := json.Marshal(stagedSubscriptionPayload{Credential: credential.Canonical()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := fixture.encryption.Encrypt(string(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := fixture.service.now().UTC()
+	stageID := "workbuddy-probe-stage"
+	row := models.CredentialStage{
+		ID: stageID, ChannelID: string(channel.WorkBuddy),
+		ConnectionType: models.ConnectionTypeSubscription,
+		AuthorizationMethod: "device_oauth", Status: models.CredentialStageReady,
+		EncryptedPayload: ciphertext, PayloadSchemaVersion: stagedSubscriptionSchemaV2,
+		SafeSummaryJSON:     models.JSON(`{}`),
+		IdentityFingerprint: fixture.service.subscriptionIdentityFingerprint(channel.WorkBuddy, credential.Identity()),
+		ExpiresAtMS:         now.Add(credentialStageReadyTTL).UnixMilli(),
+		CreatedAtMS:         now.UnixMilli(), UpdatedAtMS: now.UnixMilli(),
+	}
+	if err := fixture.db.Create(&row).Error; err != nil {
+		t.Fatalf("create stage: %v", err)
+	}
+	created, err := fixture.service.CreateGroup(t.Context(), GroupCreateRequest{
+		Name: stringPointer("workbuddy probe"), ChannelID: channel.WorkBuddy,
+		ConnectionType:      models.ConnectionTypeSubscription,
+		Models:              optionalGroupModels{Set: true, Values: []GroupModel{{ID: "hy4-preview"}}},
+		StagedCredentialIDs: []string{stageID},
+	})
+	if err != nil {
+		t.Fatalf("CreateGroup() error = %v", err)
+	}
+	var credentialRow models.Credential
+	if err := fixture.db.Where("group_id = ?", created.GroupID).Take(&credentialRow).Error; err != nil {
+		t.Fatal(err)
+	}
+	return fixture, created.GroupID, credentialRow.ID
+}
+
+func TestGroupCredentialProbeAllowsSubscriptionGroup(t *testing.T) {
 	t.Parallel()
-	fixture, groupID, credentialID := newSubscriptionCredentialFixture(t)
+	fixture, groupID, credentialID := newWorkBuddySubscriptionCredentialFixture(t)
 	executor := &credentialProbeTestExecutor{result: successfulCredentialProbeResult()}
 	fixture.service.executor = executor
 
-	_, err := fixture.service.TestGroupCredential(t.Context(), groupID, credentialID)
-	if !errors.Is(err, app_errors.ErrForbidden) {
-		t.Fatalf("TestGroupCredential() error = %v, want forbidden", err)
+	probe, err := fixture.service.TestGroupCredential(t.Context(), groupID, credentialID)
+	if err != nil {
+		t.Fatalf("TestGroupCredential() error = %v, subscription groups must be probeable", err)
 	}
-	if calls := executor.recordedCalls(); len(calls) != 0 {
-		t.Fatalf("subscription probe calls = %#v, want none", calls)
+	if probe.Outcome != CredentialProbeOutcomePassed {
+		t.Fatalf("probe outcome = %q, want %q", probe.Outcome, CredentialProbeOutcomePassed)
+	}
+	if len(executor.recordedCalls()) == 0 {
+		t.Fatal("subscription probe never reached execution")
 	}
 	initControlI18n(t)
 	const auth = "subscription-probe-auth"
@@ -753,9 +810,8 @@ func TestGroupCredentialProbeRejectsSubscriptionGroup(t *testing.T) {
 		auth,
 		"",
 	)
-	if response.Code != http.StatusForbidden ||
-		!strings.Contains(response.Body.String(), `"code":"FORBIDDEN"`) {
-		t.Fatalf("subscription probe response = %d %s", response.Code, response.Body.String())
+	if response.Code != http.StatusOK {
+		t.Fatalf("subscription probe response = %d %s, subscription groups must reach execution instead of failing validation", response.Code, response.Body.String())
 	}
 }
 
