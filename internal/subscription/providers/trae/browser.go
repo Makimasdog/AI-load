@@ -36,6 +36,9 @@ const (
 	authorizationLoginChannel  = "native_ide"
 	authorizationPluginVersion = "local"
 	authorizationAppType       = "stable"
+
+	// INTL 客户端历史版本使用 cloudide 路径完成 oauth 交换。
+	exchangeTokenPathCloudIDE = "/cloudide/api/v3/trae/oauth/ExchangeToken"
 )
 
 var (
@@ -190,6 +193,7 @@ func CompleteBrowserAuthorization(
 	if err != nil {
 		return Credential{}, err
 	}
+	var firstErr error
 	for _, endpoint := range exchangeEndpoints(profile) {
 		endpointURL := endpoint.host + endpoint.path
 		response, err := postJSON(ctx, profile, endpointURL, body, "")
@@ -201,12 +205,21 @@ func CompleteBrowserAuthorization(
 					"status", tokenError.Status, "code", tokenError.Code,
 					"message", tokenError.Message,
 					"body", exchangeBodySnippet(response.body))
-				if tokenError.Status == http.StatusNotFound || tokenError.Status == http.StatusMethodNotAllowed {
+				if firstErr == nil {
+					firstErr = err
+				}
+				if shouldTryNextExchange(profile, tokenError.Status) {
 					continue
 				}
 			} else {
 				slog.Error("trae authorization exchange failed",
 					"realm", profile.Key, "endpoint", endpointURL, "error", err)
+				if firstErr == nil {
+					firstErr = err
+				}
+				if profile.Key == realmIntl {
+					continue
+				}
 			}
 			return Credential{}, err
 		}
@@ -219,9 +232,17 @@ func CompleteBrowserAuthorization(
 				"realm", profile.Key, "endpoint", endpointURL,
 				"status", response.status, "code", code, "message", message,
 				"body", exchangeBodySnippet(response.body))
-			return Credential{}, &TokenEndpointError{
+			tokenError := &TokenEndpointError{
 				Status: response.status, Code: code, Message: message,
 			}
+			if firstErr == nil {
+				firstErr = tokenError
+			}
+			// INTL 的区域主机与路径存在多种组合，逐个尝试；无效码不会成功。
+			if profile.Key == realmIntl {
+				continue
+			}
+			return Credential{}, tokenError
 		}
 		credential := Credential{
 			Type:             "trae",
@@ -236,6 +257,9 @@ func CompleteBrowserAuthorization(
 			AppVersion:       profile.AppVersion,
 			VersionCode:      profile.VersionCode,
 		}
+		slog.Info("trae authorization exchange succeeded",
+			"realm", profile.Key, "endpoint", endpointURL,
+			"has_refresh_token", credential.RefreshToken != "")
 		if raw := result["TokenExpireAt"]; raw != nil {
 			credential.ExpiresAt = normalizeExpiry(numeric(raw))
 		}
@@ -247,6 +271,9 @@ func CompleteBrowserAuthorization(
 			credential = updated
 		}
 		return credential, nil
+	}
+	if firstErr != nil {
+		return Credential{}, firstErr
 	}
 	return Credential{}, errors.New("Trae 没有可用的授权码换取端点")
 }
@@ -266,6 +293,14 @@ func ParseAuthorizationCallback(query url.Values) (subscriptionruntime.Authoriza
 			return subscriptionruntime.AuthorizationCallback{}, err
 		}
 		result.Code = code
+		// 回调里的 host/userRegion/userTag 不是机密，但对定位交换主机很关键
+		// （客户端对 Trae 用 bootConfig.account.trae.*，不用 host，仍需取证比对）。
+		slog.Info("trae authorization callback received",
+			"host", strings.TrimSpace(query.Get("host")),
+			"user_region", strings.TrimSpace(query.Get("userRegion")),
+			"user_tag", strings.TrimSpace(query.Get("userTag")),
+			"has_user_info", strings.TrimSpace(query.Get("userInfo")) != "",
+			"auth_code_info_len", len(raw), "code_len", len(code))
 	} else {
 		result.Code = strings.TrimSpace(query.Get("code"))
 	}
@@ -304,26 +339,43 @@ func authCodeFromInfo(raw string) (string, error) {
 	return "", errors.New("Trae 回调里的 authCodeInfo 无法解析")
 }
 
-// exchangeEndpoints 是授权码换取 token 的候选主机；路径与刷新一致。
-// INTL 的 /trae/api/v3 交换端点实测在 grow-normal 主机，api.trae.ai 返回 404。
+// exchangeEndpoints 是授权码换取 token 的候选主机与路径。
+// 客户端用 product.json 的 bootConfig.account.trae.normal 作为 apiHost：
+// CN 是 api.trae.cn；INTL 是 ug-normal.trae.ai（国际站前端同款常量，
+// 其对 /oauth/ExchangeToken 的默认 base 也是它）。grow-normal 是另一个
+// 服务，只作为最后回退，避免把授权码打到错误的主机上。
 func exchangeEndpoints(profile Profile) []exchangeEndpoint {
-	hosts := make([]string, 0, len(profile.AccountFallbacks)+2)
 	if profile.Key == realmIntl {
-		hosts = append(hosts, "https://grow-normal.trae.ai", "https://grow-normal.traeapi.us")
+		return []exchangeEndpoint{
+			{host: "https://ug-normal.trae.ai", path: exchangeTokenPathV3},
+			{host: "https://ug-normal.traeapi.us", path: exchangeTokenPathV3},
+			{host: "https://grow-normal.trae.ai", path: exchangeTokenPathV3},
+			{host: "https://ug-normal.trae.ai", path: exchangeTokenPathCloudIDE},
+			{host: "https://ug-normal.traeapi.us", path: exchangeTokenPathCloudIDE},
+			{host: "https://api-us-east.trae.ai", path: exchangeTokenPathCloudIDE},
+		}
 	}
-	hosts = append(hosts, trimBaseURL(profile.AccountURL))
-	for _, fallback := range profile.AccountFallbacks {
-		hosts = append(hosts, trimBaseURL(fallback))
-	}
+	hosts := append([]string{trimBaseURL(profile.AccountURL)}, profile.AccountFallbacks...)
 	hosts = dedupeStrings(hosts)
 	result := make([]exchangeEndpoint, 0, len(hosts))
 	for _, host := range hosts {
+		host = trimBaseURL(host)
 		if host == "" {
 			continue
 		}
 		result = append(result, exchangeEndpoint{host: host, path: exchangeTokenPathV3})
 	}
 	return result
+}
+
+// shouldTryNextExchange 决定某个端点失败后是否换下一个候选。
+// INTL 的区域主机/路径尚未被单次实测锁定，除成功外都继续尝试；
+// CN 只有端点不存在时才回退。
+func shouldTryNextExchange(profile Profile, status int) bool {
+	if profile.Key == realmIntl {
+		return true
+	}
+	return status == http.StatusNotFound || status == http.StatusMethodNotAllowed
 }
 
 func newPKCE() (string, string, error) {

@@ -101,11 +101,13 @@ var (
 		Key: realmIntl, Label: "Trae（国际版）",
 		ChannelID: spec.TraeIntl, DriverID: modules.TraeIntlSubscriptionDriver,
 		ModelsID: modules.TraeIntlModelDiscovery, QuotaID: modules.TraeIntlQuotaObservation,
-		CoreURL:          "https://core-normal.traeapi.us",
-		CoreFallbacks:    []string{"https://core-normal.trae.ai", "https://coresg-normal.trae.ai", "https://coreva-normal.trae.ai"},
-		ConsoleURL:       "https://www.trae.ai",
-		AccountURL:       "https://api.trae.ai",
-		AccountFallbacks: []string{"https://grow-normal.trae.ai", "https://grow-normal.traeapi.us"},
+		CoreURL:       "https://core-normal.traeapi.us",
+		CoreFallbacks: []string{"https://core-normal.trae.ai", "https://coresg-normal.trae.ai", "https://coreva-normal.trae.ai"},
+		ConsoleURL:    "https://www.trae.ai",
+		// 客户端的 apiHost 取自 product.json 的 bootConfig.account.trae.normal；
+		// 国际版是 ug-normal.trae.ai（api.trae.ai 只有 nginx 404，grow-normal 是另一个服务）。
+		AccountURL:       "https://ug-normal.trae.ai",
+		AccountFallbacks: []string{"https://ug-normal.traeapi.us", "https://grow-normal.trae.ai"},
 		PayURL:           "https://grow-normal.traeapi.us", PayFallback: "https://grow-normal.trae.ai",
 		ChatPath:           "/api/ide/v1/llm_raw_chat",
 		ModelListPath:      "/api/ide/v1/model_list",
