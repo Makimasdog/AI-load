@@ -190,6 +190,52 @@ func TestCompleteBrowserAuthorizationExchangesWithoutDeviceProof(t *testing.T) {
 	}
 }
 
+func TestParseAuthorizationCallbackReadsConsoleRedirect(t *testing.T) {
+	t.Parallel()
+	info, err := json.Marshal(map[string]string{"AuthCode": "code-789"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 授权页用 `${callbackURL}?${params}` 拼接，回调地址必须没有自带 query。
+	parsed, err := ParseAuthorizationCallback(url.Values{
+		"isRedirect":   {"true"},
+		"scope":        {"trae"},
+		"authCodeInfo": {string(info)},
+		"loginTraceID": {"trace-2"},
+		"host":         {"www.trae.cn"},
+		"userRegion":   {"cn"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.State != "trace-2" || parsed.Code != "code-789" {
+		t.Fatalf("parsed = %#v", parsed)
+	}
+}
+
+func TestParseAuthorizationCallbackIprefersTraceIDOverCorruptedState(t *testing.T) {
+	t.Parallel()
+	// 修复前的回调地址自带 ?state=，授权页会再拼一个 "?"，把 state 值污染成
+	// "abc?isRedirect=true"。loginTraceID 才是完整可信的关联键。
+	info, err := json.Marshal(map[string]string{"AuthCode": "code-legacy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := "state=abc%3FisRedirect%3Dtrue&isRedirect=true&scope=trae&authCodeInfo=" +
+		url.QueryEscape(string(info)) + "&loginTraceID=abc"
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseAuthorizationCallback(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.State != "abc" || parsed.Code != "code-legacy" {
+		t.Fatalf("parsed = %#v", parsed)
+	}
+}
+
 func TestCompleteBrowserAuthorizationRejectsStateMismatch(t *testing.T) {
 	t.Parallel()
 	authorization, err := BeginBrowserAuthorization(CNProfile)

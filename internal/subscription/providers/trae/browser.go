@@ -12,8 +12,10 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -147,12 +149,22 @@ func CompleteBrowserAuthorization(
 	returnedState := strings.TrimSpace(completion.ReturnedState)
 	if returnedState != "" && strings.TrimSpace(completion.ExpectedState) != "" &&
 		returnedState != strings.TrimSpace(completion.ExpectedState) {
+		slog.Warn("trae authorization state mismatch",
+			"realm", profile.Key,
+			"expected_len", len(strings.TrimSpace(completion.ExpectedState)),
+			"returned_len", len(returnedState))
 		return Credential{}, ErrAuthorizationStateInvalid
 	}
 	code := strings.TrimSpace(completion.Code)
 	if code == "" {
+		slog.Warn("trae authorization callback carried no auth code", "realm", profile.Key)
 		return Credential{}, ErrAuthorizationCodeMissing
 	}
+	slog.Info("trae authorization exchange started",
+		"realm", profile.Key, "code_len", len(code),
+		"verifier_len", len(strings.TrimSpace(state.Verifier)),
+		"device_id_len", len(state.DeviceID), "machine_id_len", len(state.MachineID),
+		"public_key_len", len(strings.TrimSpace(state.PublicKey)))
 	deviceInfo := map[string]any{
 		"DeviceID":        firstNonEmpty(state.DeviceID, randomDigits(19)),
 		"MachineID":       firstNonEmpty(state.MachineID, randomHex(32)),
@@ -179,24 +191,36 @@ func CompleteBrowserAuthorization(
 		return Credential{}, err
 	}
 	for _, endpoint := range exchangeEndpoints(profile) {
-		response, err := postJSON(ctx, profile, endpoint.host+endpoint.path, body, "")
+		endpointURL := endpoint.host + endpoint.path
+		response, err := postJSON(ctx, profile, endpointURL, body, "")
 		if err != nil {
 			var tokenError *TokenEndpointError
-			if errors.As(err, &tokenError) &&
-				(tokenError.Status == http.StatusNotFound || tokenError.Status == http.StatusMethodNotAllowed) {
-				continue
+			if errors.As(err, &tokenError) {
+				slog.Warn("trae authorization exchange rejected",
+					"realm", profile.Key, "endpoint", endpointURL,
+					"status", tokenError.Status, "code", tokenError.Code,
+					"message", tokenError.Message,
+					"body", exchangeBodySnippet(response.body))
+				if tokenError.Status == http.StatusNotFound || tokenError.Status == http.StatusMethodNotAllowed {
+					continue
+				}
+			} else {
+				slog.Error("trae authorization exchange failed",
+					"realm", profile.Key, "endpoint", endpointURL, "error", err)
 			}
 			return Credential{}, err
 		}
 		result := decodeResult(response.body)
 		token := firstNonEmpty(stringValue(result["Token"]), stringValue(result["token"]))
 		if token == "" {
+			code := firstNonEmpty(codeOf(response.body), "authorization_exchange_failed")
+			message := firstNonEmpty(stringValue(result["Message"]), messageOf(response.body))
+			slog.Warn("trae authorization exchange returned no token",
+				"realm", profile.Key, "endpoint", endpointURL,
+				"status", response.status, "code", code, "message", message,
+				"body", exchangeBodySnippet(response.body))
 			return Credential{}, &TokenEndpointError{
-				Status: response.status,
-				Code:   firstNonEmpty(codeOf(response.body), "authorization_exchange_failed"),
-				Message: firstNonEmpty(
-					stringValue(result["Message"]), messageOf(response.body),
-				),
+				Status: response.status, Code: code, Message: message,
 			}
 		}
 		credential := Credential{
@@ -281,8 +305,13 @@ func authCodeFromInfo(raw string) (string, error) {
 }
 
 // exchangeEndpoints 是授权码换取 token 的候选主机；路径与刷新一致。
+// INTL 的 /trae/api/v3 交换端点实测在 grow-normal 主机，api.trae.ai 返回 404。
 func exchangeEndpoints(profile Profile) []exchangeEndpoint {
-	hosts := []string{trimBaseURL(profile.AccountURL)}
+	hosts := make([]string, 0, len(profile.AccountFallbacks)+2)
+	if profile.Key == realmIntl {
+		hosts = append(hosts, "https://grow-normal.trae.ai", "https://grow-normal.traeapi.us")
+	}
+	hosts = append(hosts, trimBaseURL(profile.AccountURL))
 	for _, fallback := range profile.AccountFallbacks {
 		hosts = append(hosts, trimBaseURL(fallback))
 	}
@@ -356,3 +385,20 @@ func newUUID() string {
 func deviceName(machineID string) string {
 	return "DESKTOP-" + strings.ToUpper(shortHash(machineID)[:8])
 }
+
+// exchangeBodySnippet 返回经过脱敏与截断的上游响应体，供日志定位使用。
+func exchangeBodySnippet(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	const limit = 512
+	text := string(body)
+	if len(text) > limit {
+		text = text[:limit] + "...(truncated)"
+	}
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.ReplaceAll(text, "\r", " ")
+	return exchangeSecretPattern.ReplaceAllString(text, `"$1":"<redacted>"`)
+}
+
+var exchangeSecretPattern = regexp.MustCompile(`(?i)"(token|refresh_?token|access_?token|authorization|code_?verifier|auth_?code)"\s*:\s*"[^"]*"`)
