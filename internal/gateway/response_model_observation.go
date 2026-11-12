@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"gpt-load/internal/dialect"
+	"gpt-load/internal/telemetry"
 )
 
 const (
@@ -17,6 +18,12 @@ type responseModelObservation struct {
 	reported string
 	observed bool
 	mismatch bool
+}
+
+// responseModelMatches reports whether the upstream-reported name is the
+// requested model or a known equivalent variant (see telemetry).
+func responseModelMatches(expected string, reported string) bool {
+	return telemetry.ResponseModelEquivalent(expected, reported)
 }
 
 type responseModelTracker struct {
@@ -38,7 +45,7 @@ func (tracker *responseModelTracker) observe(payload []byte) {
 		if strings.TrimSpace(model) == "" {
 			continue
 		}
-		mismatch := model != tracker.expected
+		mismatch := !responseModelMatches(tracker.expected, model)
 		reported := projectObservedResponseModel(model, tracker.expected, mismatch)
 		tracker.result.observed = true
 		if mismatch {

@@ -1147,10 +1147,13 @@ func (s *websocketConnection) runWebsocketAttempt(ctx context.Context, cancel co
 				return err
 			}
 		}
-		if response.Model != "" && (!result.ResponseModelMismatch || response.Model != input.UpstreamModelID) {
-			result.UpstreamReportedModel = response.Model
-			result.ResponseModelObserved = true
-			result.ResponseModelMismatch = response.Model != input.UpstreamModelID
+		if response.Model != "" {
+			matches := responseModelMatches(input.UpstreamModelID, response.Model)
+			if !result.ResponseModelMismatch || !matches {
+				result.UpstreamReportedModel = response.Model
+				result.ResponseModelObserved = true
+				result.ResponseModelMismatch = !matches
+			}
 		}
 		if providerError && !result.Committed && (bufferFirstError || (bufferRecoverableError && codexrecovery.Classify(string(body)) != "")) {
 			// 先保留已脱敏的错误，待分类及候选选择结束后再决定是否交付。

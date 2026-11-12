@@ -230,7 +230,8 @@ func requestOutcomeModelConsistency(
 	if !outcome.responseModelObserved || outcome.upstreamReportedModel == "" {
 		return "", telemetry.ModelConsistencyUnknown
 	}
-	if outcome.responseModelMismatch || outcome.upstreamReportedModel != outcome.upstreamModel {
+	if outcome.responseModelMismatch ||
+		!telemetry.ResponseModelEquivalent(outcome.upstreamModel, outcome.upstreamReportedModel) {
 		return outcome.upstreamReportedModel, telemetry.ModelConsistencyMismatch
 	}
 	return outcome.upstreamReportedModel, telemetry.ModelConsistencyMatch

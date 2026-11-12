@@ -248,13 +248,13 @@ func validateModelObservation(event telemetry.RequestEvent) error {
 		}
 	case telemetry.ModelConsistencyMatch:
 		if !successfulModeledRequest || event.UpstreamReportedModel == "" ||
-			event.UpstreamReportedModel != event.UpstreamModel {
-			return fmt.Errorf("matching observation requires identical upstream and reported models")
+			!telemetry.ResponseModelEquivalent(event.UpstreamModel, event.UpstreamReportedModel) {
+			return fmt.Errorf("matching observation requires an equivalent upstream and reported model")
 		}
 	case telemetry.ModelConsistencyMismatch:
 		if !successfulModeledRequest || event.UpstreamReportedModel == "" ||
-			event.UpstreamReportedModel == event.UpstreamModel {
-			return fmt.Errorf("mismatching observation requires distinct upstream and reported models")
+			telemetry.ResponseModelEquivalent(event.UpstreamModel, event.UpstreamReportedModel) {
+			return fmt.Errorf("mismatching observation requires a distinct upstream and reported model")
 		}
 	default:
 		return fmt.Errorf("invalid model consistency state %q", event.ModelConsistency)

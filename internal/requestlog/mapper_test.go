@@ -349,6 +349,22 @@ func TestMapEventRejectsInconsistentModelObservation(t *testing.T) {
 	}
 }
 
+func TestMapEventAcceptsKnownEquivalentModelObservation(t *testing.T) {
+	event := testEvent("known-equivalent-model-observation")
+	event.UpstreamModel = "gemini-3.8-flash-medium"
+	event.UpstreamReportedModel = "gemini-3.8-flash-n"
+	event.ModelConsistency = telemetry.ModelConsistencyMatch
+	event.Attempts[0].UpstreamModel = event.UpstreamModel
+	event.Usage.Pricing.UpstreamModel = event.UpstreamModel
+
+	row := mustMapEvent(t, redact.New(), event)
+	if row.ModelConsistency != string(telemetry.ModelConsistencyMatch) ||
+		row.UpstreamReportedModel != "gemini-3.8-flash-n" {
+		t.Fatalf("consistency/reported = %q/%q, want match/gemini-3.8-flash-n",
+			row.ModelConsistency, row.UpstreamReportedModel)
+	}
+}
+
 func TestMapEventIgnoresModelObservationForUnsuccessfulRequest(t *testing.T) {
 	event := testEvent("unsuccessful-model-observation")
 	event.Status = telemetry.RequestStatusError
