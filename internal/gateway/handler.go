@@ -1884,6 +1884,10 @@ func (handler *Handler) executeAttempts(
 		handler.completeReason(ginContext, recorder, reasonAdvisorModelUnavailable)
 		return
 	}
+	if iterator.StaticReason() == scheduler.ReasonNoRouteTarget {
+		handler.completeReason(ginContext, recorder, reasonModelRouteNotFound)
+		return
+	}
 	if parameterOverrideFailure != nil && lastAttemptIndex < 0 {
 		handler.completeReason(ginContext, recorder, *parameterOverrideFailure)
 		return

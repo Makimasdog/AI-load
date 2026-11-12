@@ -37,6 +37,16 @@ var (
 	reasonModelRequiredByFilter         = reason{Status: http.StatusBadRequest, Code: "model_required_by_filter", Message: "A model is required by the access key filter."}
 	reasonAdvisorModelUnavailable       = reason{Status: http.StatusBadRequest, Code: "advisor_model_unavailable", Message: "The advisor model must be provided by the selected group and allowed by the access key."}
 	reasonNoCandidate                   = reason{Status: http.StatusServiceUnavailable, Code: "no_available_candidate", Message: "No available upstream candidate."}
+	// reasonModelRouteNotFound covers requests rejected before any candidate or
+	// credential is considered: the selected protocol has no route for this
+	// model at all. Retrying cannot help, so it must not look like a transient
+	// service outage to retrying clients.
+	reasonModelRouteNotFound = reason{
+		Status: http.StatusBadRequest,
+		Code:   "model_route_not_found",
+		Message: "No group provides this model for the requested protocol. " +
+			"Check the model name and the client protocol (OpenAI-compatible or Anthropic).",
+	}
 	reasonUpstreamRateLimited           = reason{Status: http.StatusTooManyRequests, Code: "upstream_rate_limited", Message: "Upstream rate limit exceeded."}
 	reasonUpstreamConnect               = reason{Status: http.StatusBadGateway, Code: "upstream_connect_failed", Message: "Could not connect to an upstream service."}
 	reasonUpstreamTimeout               = reason{Status: http.StatusGatewayTimeout, Code: "upstream_timeout", Message: "Upstream request timed out."}

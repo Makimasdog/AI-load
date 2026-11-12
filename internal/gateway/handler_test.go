@@ -4356,6 +4356,38 @@ func TestHandlerLeavesCredentialRegistryUnchangedForNonCredentialEffects(t *test
 	}
 }
 
+func TestHandlerRejectsUnroutableModelWithBadRequest(t *testing.T) {
+	forwarder := &scriptedForwarder{}
+	handler, _, _ := newHandlerForTest(t, forwarder, "key-a")
+	handler.dialects = dialect.NewSet(dialect.NewOpenAI(), dialect.NewAnthropic())
+	engine := gin.New()
+	bindGatewayRoutesForTest(t, engine, handler)
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(
+		`{"model":"missing-model","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`,
+	))
+	request.Header.Set("Authorization", "Bearer gl-client")
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	var body struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode reason body: %v", err)
+	}
+	if body.Code != reasonModelRouteNotFound.Code || body.Message == "" {
+		t.Fatalf("body = %+v, want code %q with message", body, reasonModelRouteNotFound.Code)
+	}
+	if len(forwarder.inputs) != 0 {
+		t.Fatalf("attempts = %d, want 0", len(forwarder.inputs))
+	}
+}
+
 func TestHandlerReturnsStableTerminalReasons(t *testing.T) {
 	tests := []struct {
 		name         string

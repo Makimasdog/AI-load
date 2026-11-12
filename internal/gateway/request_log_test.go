@@ -428,15 +428,15 @@ func TestHandlerRejectsResponsesResourceWhenGroupHasNoModels(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 	events := sink.snapshot()
-	if response.Code != http.StatusServiceUnavailable || body.Code != reasonNoCandidate.Code ||
+	if response.Code != http.StatusBadRequest || body.Code != reasonModelRouteNotFound.Code ||
 		len(forwarder.inputs) != 0 || len(events) != 1 || len(events[0].Attempts) != 0 {
 		t.Fatalf(
-			"response/code/attempts/events = %d/%q/%d/%#v, want 503/%q/0/one event without attempts",
+			"response/code/attempts/events = %d/%q/%d/%#v, want 400/%q/0/one event without attempts",
 			response.Code,
 			body.Code,
 			len(forwarder.inputs),
 			events,
-			reasonNoCandidate.Code,
+			reasonModelRouteNotFound.Code,
 		)
 	}
 }
