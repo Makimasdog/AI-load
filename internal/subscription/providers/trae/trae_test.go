@@ -2,9 +2,18 @@ package trae
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -295,5 +304,118 @@ func TestReasoningBufferCoalescesShortDeltas(t *testing.T) {
 	buffer.Flush()
 	if len(flushed) != 1 || flushed[0] != "abc" {
 		t.Fatalf("flushed = %#v", flushed)
+	}
+}
+
+// TestDeviceProofMatchesClientContract 校验客户端 pFe() 的关键契约：
+// 换行拼接、秒级时间戳、32 位 hex nonce、ECDSA-P256 DER 签名、IDE_PC。
+func TestDeviceProofMatchesClientContract(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	credential := Credential{RefreshToken: "refresh-token", UID: "1234567890123456789", DevicePrivateKey: pemText}
+	info, proof, err := buildDeviceProof(IntlProfile, exchangeTokenPathV3, credential)
+	if err != nil {
+		t.Fatalf("buildDeviceProof: %v", err)
+	}
+	if info["PlatformCode"] != "IDE_PC" {
+		t.Fatalf("platform code = %v", info["PlatformCode"])
+	}
+	nonce, _ := proof["Nonce"].(string)
+	if len(nonce) != 32 {
+		t.Fatalf("nonce length = %d", len(nonce))
+	}
+	timestamp, ok := proof["Timestamp"].(int64)
+	if !ok || timestamp < 1_600_000_000 || timestamp > 4_000_000_000 {
+		t.Fatalf("timestamp is not unix seconds: %#v", proof["Timestamp"])
+	}
+	canonical := strings.Join([]string{
+		http.MethodPost, exchangeTokenPathV3, clientIDIDE, "refresh-token", strconv.FormatInt(timestamp, 10), nonce,
+	}, "\n")
+	signature, err := base64.StdEncoding.DecodeString(proof["Signature"].(string))
+	if err != nil {
+		t.Fatalf("decode signature: %v", err)
+	}
+	digest := sha256.Sum256([]byte(canonical))
+	if !ecdsa.VerifyASN1(&key.PublicKey, digest[:], signature) {
+		t.Fatal("signature does not verify as ECDSA-P256 DER over the newline canonical form")
+	}
+}
+
+func TestParseStorageJSONPlaintextImport(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	der, _ := x509.MarshalPKCS8PrivateKey(key)
+	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	auth, _ := json.Marshal(map[string]any{
+		"token": "access-from-store", "refreshToken": "refresh-from-store",
+		"userId": "1234567890123456789", "expiredAt": 1893456000000,
+	})
+	device, _ := json.Marshal(map[string]any{"privateKeyPEM": keyPEM, "publicKeyPEM": "pub"})
+	store := map[string]any{
+		"iCubeAuthInfo://icube.cloudide":  string(auth),
+		"iCubeAuthInfo://icube-dc:987654321": string(device),
+		"telemetry.machineId":             "machine-from-store",
+	}
+	raw, _ := json.Marshal(store)
+	credential, err := ParseCredentialJSON(raw, IntlProfile)
+	if err != nil {
+		t.Fatalf("ParseCredentialJSON: %v", err)
+	}
+	if credential.AccessToken != "access-from-store" || credential.RefreshToken != "refresh-from-store" {
+		t.Fatalf("tokens = %+v", credential)
+	}
+	if credential.UID != "1234567890123456789" || credential.DeviceID != "987654321" {
+		t.Fatalf("identity = %+v", credential)
+	}
+	if credential.DevicePrivateKey == "" || credential.MachineID != "machine-from-store" {
+		t.Fatalf("device material = %+v", credential)
+	}
+	if credential.ExpiresAt != 1893456000 {
+		t.Fatalf("expires at = %d", credential.ExpiresAt)
+	}
+}
+
+func TestParseStorageJSONRejectsTCEnvelope(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"iCubeAuthInfo://icube.cloudide": "dGMFEAAAsomeciphertext",
+	})
+	_, err := ParseCredentialJSON(raw, CNProfile)
+	if !errors.Is(err, ErrEncryptedStorage) {
+		t.Fatalf("err = %v, want ErrEncryptedStorage", err)
+	}
+}
+
+func TestIntlImportRequiresDeviceKey(t *testing.T) {
+	var driver = &driver{profile: IntlProfile}
+	_, err := driver.ImportCredential(context.Background(), []byte(`{"realm":"intl","refresh_token":"r1"}`))
+	if !errors.Is(err, ErrIntlMissingDeviceKey) {
+		t.Fatalf("err = %v, want ErrIntlMissingDeviceKey", err)
+	}
+}
+
+func TestMissingAccessTokenIsCredentialScoped(t *testing.T) {
+	executor := NewExecutor(IntlProfile)
+	_, err := executor.Execute(context.Background(), "cred", Credential{UID: "u1"}, ExecuteRequest{
+		AttemptID: "a3", Model: "gpt-5.5", Format: "openai",
+		Payload: []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}]}`),
+	})
+	var upstream *UpstreamError
+	if !errors.As(err, &upstream) {
+		t.Fatalf("err = %v, want UpstreamError", err)
+	}
+	if upstream.ErrorCode() != "missing_access_token" || !upstream.IsCredentialScoped() {
+		t.Fatalf("upstream error = %+v", upstream)
+	}
+	if !strings.Contains(upstream.Message, "access_token") {
+		t.Fatalf("message = %q", upstream.Message)
 	}
 }

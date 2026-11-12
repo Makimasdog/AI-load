@@ -246,6 +246,8 @@ func traeErrorSummary(status int, code, upstreamMessage string) string {
 		return "上游不支持或已下线该模型"
 	case "20403", "20405":
 		return "设备指纹校验失败，请重新导入包含设备信息的凭证"
+	case "missing_access_token":
+		return "该 Trae 凭证缺少 access_token，请重新导入或先执行刷新"
 	}
 	switch {
 	case status == http.StatusUnauthorized:

@@ -66,6 +66,9 @@ func ListModels(ctx context.Context, profile Profile, value Credential, baseURL 
 
 // ListNamedModels 返回带展示名的模型目录。
 func ListNamedModels(ctx context.Context, profile Profile, value Credential, baseURL string) ([]modelEntry, error) {
+	if strings.TrimSpace(value.AccessToken) == "" {
+		return nil, ErrMissingAccessToken
+	}
 	entries, err := fetchModelCatalog(ctx, profile, value, baseURL)
 	if err == nil && len(entries) > 0 {
 		return entries, nil

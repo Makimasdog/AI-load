@@ -83,6 +83,9 @@ func observedQuotaSnapshot(ctx context.Context, profile Profile, value Credentia
 }
 
 func fetchQuotaSnapshot(ctx context.Context, profile Profile, value Credential) (observation.Snapshot, error) {
+	if strings.TrimSpace(value.AccessToken) == "" {
+		return observation.Snapshot{}, ErrMissingAccessToken
+	}
 	payHost := trimBaseURL(firstNonEmpty(profile.PayURL, profile.AccountURL))
 	entBody, status, err := payJSON(ctx, profile, value, payHost+profile.EntUsagePath)
 	if err != nil || status < 200 || status >= 300 {

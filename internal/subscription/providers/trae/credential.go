@@ -42,6 +42,9 @@ type Credential struct {
 	DeviceType  string `json:"device_type,omitempty"`
 	DeviceBrand string `json:"device_brand,omitempty"`
 	DeviceCPU   string `json:"device_cpu,omitempty"`
+	DeviceName  string `json:"device_name,omitempty"`
+	DeviceModel string `json:"device_model,omitempty"`
+	OSInfo      string `json:"os_info,omitempty"`
 	OSVersion   string `json:"os_version,omitempty"`
 
 	// DevicePrivateKey/DevicePublicKey 仅国际版刷新需要（P-256 SPKI）。
@@ -68,11 +71,15 @@ func (value Credential) DisplayLabel() string {
 	return "Trae"
 }
 
-// ParseCredentialJSON 接受规范化 JSON 与社区工具导出的 camelCase 形态。
+// ParseCredentialJSON 接受规范化 JSON、社区工具导出的 camelCase 形态，
+// 以及客户端 storage.json 的明文片段（国际版）。
 func ParseCredentialJSON(raw []byte, profile Profile) (Credential, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		return Credential{}, ErrCredentialIncomplete
+	}
+	if bytes.Contains(trimmed, []byte("iCubeAuthInfo://icube.cloudide")) {
+		return parseStorageJSON(trimmed, profile)
 	}
 	var flat struct {
 		Type         string          `json:"type"`
@@ -92,6 +99,9 @@ func ParseCredentialJSON(raw []byte, profile Profile) (Credential, error) {
 		DeviceType       string `json:"device_type"`
 		DeviceBrand      string `json:"device_brand"`
 		DeviceCPU        string `json:"device_cpu"`
+		DeviceName       string `json:"device_name"`
+		DeviceModel      string `json:"device_model"`
+		OSInfo           string `json:"os_info"`
 		OSVersion        string `json:"os_version"`
 		DevicePrivateKey string `json:"device_private_key"`
 		DevicePublicKey  string `json:"device_public_key"`
@@ -128,6 +138,9 @@ func ParseCredentialJSON(raw []byte, profile Profile) (Credential, error) {
 		DeviceType:       strings.TrimSpace(flat.DeviceType),
 		DeviceBrand:      strings.TrimSpace(flat.DeviceBrand),
 		DeviceCPU:        strings.TrimSpace(flat.DeviceCPU),
+		DeviceName:       strings.TrimSpace(flat.DeviceName),
+		DeviceModel:      strings.TrimSpace(flat.DeviceModel),
+		OSInfo:           strings.TrimSpace(flat.OSInfo),
 		OSVersion:        strings.TrimSpace(flat.OSVersion),
 		DevicePrivateKey: strings.TrimSpace(flat.DevicePrivateKey),
 		DevicePublicKey:  strings.TrimSpace(flat.DevicePublicKey),
@@ -325,4 +338,107 @@ func normalizeExpiry(value int64) int64 {
 func shortHash(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+// parseStorageJSON 解析客户端 storage.json 的明文片段（国际版）。
+//
+// 国内版的同名键是 tc 密文信封（base64），这里不做解密，直接给出明确错误，
+// 避免用户以为"导入成功但调不通"。
+func parseStorageJSON(raw []byte, profile Profile) (Credential, error) {
+	var store map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &store); err != nil {
+		return Credential{}, fmt.Errorf("解析 Trae storage.json 失败: %w", err)
+	}
+	authRaw, ok := store["iCubeAuthInfo://icube.cloudide"]
+	if !ok {
+		return Credential{}, fmt.Errorf("storage.json 中未找到 iCubeAuthInfo://icube.cloudide")
+	}
+	var authText string
+	if err := json.Unmarshal(authRaw, &authText); err != nil {
+		return Credential{}, fmt.Errorf("iCubeAuthInfo://icube.cloudide 不是字符串: %w", err)
+	}
+	trimmedAuth := strings.TrimSpace(authText)
+	if !strings.HasPrefix(trimmedAuth, "{") {
+		return Credential{}, ErrEncryptedStorage
+	}
+	var auth map[string]any
+	decoder := json.NewDecoder(strings.NewReader(trimmedAuth))
+	decoder.UseNumber()
+	if err := decoder.Decode(&auth); err != nil {
+		return Credential{}, fmt.Errorf("解析 iCubeAuthInfo 明文失败: %w", err)
+	}
+	credential := Credential{
+		Type:         "trae",
+		Realm:        profile.Key,
+		AccessToken:  firstNonEmpty(lookupText(auth, "token", "accessToken", "access_token", "Token"), lookupText(auth, "jwt")),
+		RefreshToken: lookupText(auth, "refreshToken", "refresh_token", "RefreshToken"),
+		UID:          lookupText(auth, "userId", "user_id", "uid", "UserId"),
+		UserName:     lookupText(auth, "userName", "username", "name"),
+		Email:        lookupText(auth, "email", "Email"),
+		StoreRegion:  lookupText(auth, "region", "storeRegion", "store_region"),
+		ExpiresAt:    firstNonZero(expiryFromRaw(rawOf(auth, "expiredAt")), expiryFromRaw(rawOf(auth, "expiresAt")), expiryFromRaw(rawOf(auth, "expired_at"))),
+		AppVersion:   firstNonEmpty(lookupText(auth, "appVersion"), profile.AppVersion),
+		VersionCode:  firstNonEmpty(lookupText(auth, "versionCode"), profile.VersionCode),
+	}
+	// 设备密钥对：iCubeAuthInfo://icube-dc:<设备ID>
+	for key, value := range store {
+		if !strings.HasPrefix(key, "iCubeAuthInfo://icube-dc:") {
+			continue
+		}
+		var keyText string
+		if err := json.Unmarshal(value, &keyText); err != nil {
+			continue
+		}
+		trimmedKey := strings.TrimSpace(keyText)
+		if !strings.HasPrefix(trimmedKey, "{") {
+			return Credential{}, ErrEncryptedStorage
+		}
+		var pair map[string]any
+		if err := json.Unmarshal([]byte(trimmedKey), &pair); err != nil {
+			continue
+		}
+		credential.DevicePrivateKey = lookupText(pair, "privateKeyPEM", "private_key_pem", "privateKey")
+		credential.DevicePublicKey = lookupText(pair, "publicKeyPEM", "public_key_pem", "publicKey")
+		if suffix := strings.TrimPrefix(key, "iCubeAuthInfo://icube-dc:"); credential.DeviceID == "" {
+			credential.DeviceID = strings.TrimSpace(suffix)
+		}
+	}
+	if rawMachine, ok := store["telemetry.machineId"]; ok {
+		var machine string
+		if err := json.Unmarshal(rawMachine, &machine); err == nil {
+			credential.MachineID = strings.TrimSpace(strings.Trim(machine, `"`))
+		}
+	}
+	credential.AccessToken = strings.TrimSpace(credential.AccessToken)
+	credential.RefreshToken = strings.TrimSpace(credential.RefreshToken)
+	if credential.AccessToken == "" && credential.RefreshToken == "" {
+		return Credential{}, ErrCredentialIncomplete
+	}
+	if credential.UID == "" && credential.RefreshToken != "" {
+		credential.UID = "rt-" + shortHash(credential.RefreshToken)
+	}
+	return credential, nil
+}
+
+func lookupText(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := values[key]; ok {
+			if text := strings.TrimSpace(stringValue(value)); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func rawOf(values map[string]any, key string) json.RawMessage {
+	value, ok := values[key]
+	if !ok {
+		return nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }

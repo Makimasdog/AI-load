@@ -43,12 +43,13 @@ type Profile struct {
 	ModelsID  spec.UtilityID
 	QuotaID   spec.UtilityID
 
-	CoreURL         string
-	CoreFallbacks   []string
-	AccountURL      string
-	AccountFallback string
-	PayURL          string
-	PayFallback     string
+	CoreURL    string
+	CoreFallbacks []string
+	AccountURL string
+	// AccountFallbacks 是 OAuth/身份主机的备选，续期时按顺序尝试。
+	AccountFallbacks []string
+	PayURL           string
+	PayFallback      string
 
 	ChatPath      string
 	ChatFallback  string
@@ -65,8 +66,6 @@ type Profile struct {
 	VersionCode  string
 	Region       string
 	StoreCountry string
-	// ProofSpaced 表示 DeviceProof 签名原文使用空格拼接（INTL）。
-	ProofSpaced bool
 }
 
 var (
@@ -75,8 +74,9 @@ var (
 		Key: realmCN, Label: "Trae（国内版）",
 		ChannelID: spec.Trae, DriverID: modules.TraeSubscriptionDriver,
 		ModelsID: modules.TraeModelDiscovery, QuotaID: modules.TraeQuotaObservation,
-		CoreURL:    "https://trae-api-cn.mchost.guru",
-		AccountURL: "https://api.trae.com.cn",
+		CoreURL:          "https://trae-api-cn.mchost.guru",
+		AccountURL:       "https://api.trae.cn",
+		AccountFallbacks: []string{"https://api.trae.com.cn"},
 		PayURL:     "https://api.trae.cn", PayFallback: "https://api.trae.com.cn",
 		ChatPath: "/api/ide/v2/llm_raw_chat", ChatFallback: "/api/ide/v1/llm_raw_chat",
 		ModelListPath:      "/api/ide/v1/model_list",
@@ -95,7 +95,8 @@ var (
 		ModelsID: modules.TraeIntlModelDiscovery, QuotaID: modules.TraeIntlQuotaObservation,
 		CoreURL:       "https://core-normal.traeapi.us",
 		CoreFallbacks: []string{"https://core-normal.trae.ai", "https://coresg-normal.trae.ai", "https://coreva-normal.trae.ai"},
-		AccountURL:    "https://grow-normal.trae.ai", AccountFallback: "https://grow-normal.traeapi.us",
+		AccountURL:       "https://api.trae.ai",
+		AccountFallbacks: []string{"https://grow-normal.trae.ai", "https://grow-normal.traeapi.us"},
 		PayURL: "https://grow-normal.traeapi.us", PayFallback: "https://grow-normal.trae.ai",
 		ChatPath:           "/api/ide/v1/llm_raw_chat",
 		ModelListPath:      "/api/ide/v1/model_list",
@@ -106,7 +107,6 @@ var (
 		UserAgent:          "TraeClient/TTNet",
 		AppVersion:         "3.6.2", VersionCode: "20260924",
 		Region: "US", StoreCountry: "us",
-		ProofSpaced: true,
 	}
 )
 
@@ -138,6 +138,11 @@ func (d *driver) ImportCredential(_ context.Context, raw []byte) (subscriptionru
 	if err != nil {
 		return subscriptionruntime.Credential{}, err
 	}
+	// 国际版只有 refresh token 而无设备私钥时，刷新必然返回 20405；
+	// 在导入阶段直接拒绝，避免用户以为导入成功。
+	if d.profile.Key == realmIntl && value.AccessToken == "" && strings.TrimSpace(value.DevicePrivateKey) == "" {
+		return subscriptionruntime.Credential{}, ErrIntlMissingDeviceKey
+	}
 	return newRuntimeCredential(value)
 }
 
@@ -145,6 +150,9 @@ func (d *driver) Refresh(ctx context.Context, current subscriptionruntime.Creden
 	value, err := ParseCredentialJSON(current.Canonical(), d.profile)
 	if err != nil {
 		return subscriptionruntime.Credential{}, err
+	}
+	if strings.TrimSpace(value.AccessToken) == "" && strings.TrimSpace(value.RefreshToken) == "" {
+		return subscriptionruntime.Credential{}, ErrCredentialIncomplete
 	}
 	refreshed, err := RefreshCredentialOnce(ctx, d.profile, value)
 	if err != nil {

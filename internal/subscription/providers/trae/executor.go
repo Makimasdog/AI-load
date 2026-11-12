@@ -268,6 +268,13 @@ func (executor *upstreamExecutor) open(ctx context.Context, credential Credentia
 		return nil, fmt.Errorf("Trae only supports OpenAI chat completions, got %q", format)
 	}
 	profile := executor.profile
+	if strings.TrimSpace(credential.AccessToken) == "" {
+		// 凭证缺失不是上游故障：直接按鉴权失败返回，让运行时走刷新流程。
+		return nil, &UpstreamError{
+			Status: http.StatusUnauthorized, Code: "missing_access_token",
+			Credential: true, Message: ErrMissingAccessToken.Error(),
+		}
+	}
 	base := trimBaseURL(firstNonEmpty(request.BaseURL, credential.BaseURL, profile.CoreURL))
 	payload, err := normalizeRequestBody(request.Payload, request.Model, credential, profile)
 	if err != nil {
