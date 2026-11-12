@@ -31,6 +31,7 @@ func Trae() spec.Module {
 			Type:            spec.ConnectionSubscription,
 			CredentialInput: "authorization",
 			AuthorizationMethods: []spec.AuthorizationMethod{
+				spec.AuthorizationBrowserOAuth,
 				spec.AuthorizationOAuthFile,
 			},
 		},
@@ -71,6 +72,7 @@ func TraeIntl() spec.Module {
 			Type:            spec.ConnectionSubscription,
 			CredentialInput: "authorization",
 			AuthorizationMethods: []spec.AuthorizationMethod{
+				spec.AuthorizationBrowserOAuth,
 				spec.AuthorizationOAuthFile,
 			},
 		},

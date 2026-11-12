@@ -43,8 +43,11 @@ type Profile struct {
 	ModelsID  spec.UtilityID
 	QuotaID   spec.UtilityID
 
-	CoreURL    string
+	CoreURL       string
 	CoreFallbacks []string
+	// ConsoleURL 是网页登录授权页所在的站点（客户端 product.json 的
+	// consoleHost，Trae 的 loginHost 与它相同）。
+	ConsoleURL string
 	AccountURL string
 	// AccountFallbacks 是 OAuth/身份主机的备选，续期时按顺序尝试。
 	AccountFallbacks []string
@@ -75,9 +78,10 @@ var (
 		ChannelID: spec.Trae, DriverID: modules.TraeSubscriptionDriver,
 		ModelsID: modules.TraeModelDiscovery, QuotaID: modules.TraeQuotaObservation,
 		CoreURL:          "https://trae-api-cn.mchost.guru",
+		ConsoleURL:       "https://www.trae.cn",
 		AccountURL:       "https://api.trae.cn",
 		AccountFallbacks: []string{"https://api.trae.com.cn"},
-		PayURL:     "https://api.trae.cn", PayFallback: "https://api.trae.com.cn",
+		PayURL:           "https://api.trae.cn", PayFallback: "https://api.trae.com.cn",
 		ChatPath: "/api/ide/v2/llm_raw_chat", ChatFallback: "/api/ide/v1/llm_raw_chat",
 		ModelListPath:      "/api/ide/v1/model_list",
 		EntUsagePath:       "/trae/api/v2/pay/ide_user_ent_usage",
@@ -93,11 +97,12 @@ var (
 		Key: realmIntl, Label: "Trae（国际版）",
 		ChannelID: spec.TraeIntl, DriverID: modules.TraeIntlSubscriptionDriver,
 		ModelsID: modules.TraeIntlModelDiscovery, QuotaID: modules.TraeIntlQuotaObservation,
-		CoreURL:       "https://core-normal.traeapi.us",
-		CoreFallbacks: []string{"https://core-normal.trae.ai", "https://coresg-normal.trae.ai", "https://coreva-normal.trae.ai"},
+		CoreURL:          "https://core-normal.traeapi.us",
+		CoreFallbacks:    []string{"https://core-normal.trae.ai", "https://coresg-normal.trae.ai", "https://coreva-normal.trae.ai"},
+		ConsoleURL:       "https://www.trae.ai",
 		AccountURL:       "https://api.trae.ai",
 		AccountFallbacks: []string{"https://grow-normal.trae.ai", "https://grow-normal.traeapi.us"},
-		PayURL: "https://grow-normal.traeapi.us", PayFallback: "https://grow-normal.trae.ai",
+		PayURL:           "https://grow-normal.traeapi.us", PayFallback: "https://grow-normal.trae.ai",
 		ChatPath:           "/api/ide/v1/llm_raw_chat",
 		ModelListPath:      "/api/ide/v1/model_list",
 		EntUsagePath:       "/trae/api/v1/pay/ide_user_ent_usage",
