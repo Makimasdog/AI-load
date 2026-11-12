@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -96,35 +97,37 @@ func BeginBrowserAuthorization(profile Profile) (BrowserAuthorization, error) {
 	if err != nil {
 		return BrowserAuthorization{}, err
 	}
-	state := randomHex(16)
+	state := newUUID()
 	deviceID := randomDigits(19)
 	machineID := randomHex(32)
 
+	// 授权页会用 ^http://127.0.0.1:(\d+)/authorize$ 校验回调地址，
+	// 因此这里不能附带任何 query（state 只能经 login_trace_id 关联）。
 	redirect := RedirectURI(profile)
-	callback := redirect + "?state=" + url.QueryEscape(state)
-	query := url.Values{}
-	query.Set("login_version", "1")
-	query.Set("auth_from", "trae")
-	query.Set("login_channel", authorizationLoginChannel)
-	query.Set("plugin_version", authorizationPluginVersion)
-	query.Set("auth_type", "local")
-	query.Set("client_id", clientIDIDE)
-	query.Set("redirect", "0")
-	query.Set("login_trace_id", state)
-	query.Set("auth_callback_url", callback)
-	query.Set("machine_id", machineID)
-	query.Set("device_id", deviceID)
-	query.Set("x_device_id", deviceID)
-	query.Set("x_machine_id", machineID)
-	query.Set("x_device_type", "Windows")
-	query.Set("x_os_version", "10.0")
-	query.Set("x_app_version", profile.AppVersion)
-	query.Set("x_app_type", authorizationAppType)
-	query.Set("code_challenge", challenge)
-	query.Set("code_challenge_method", "S256")
+	pluginVersion := strings.TrimSpace(profile.BuildVersion)
+	if pluginVersion == "" {
+		pluginVersion = authorizationPluginVersion
+	}
+	// 与客户端 buildLoginUrl 完全一致：回调地址原样拼接，不额外编码。
+	base := fmt.Sprintf(
+		"%s/authorization?login_version=1&auth_from=trae&login_channel=%s&plugin_version=%s"+
+			"&auth_type=local&client_id=%s&redirect=0&login_trace_id=%s"+
+			"&auth_callback_url=%s&machine_id=%s&device_id=%s",
+		consoleURL, authorizationLoginChannel, pluginVersion, clientIDIDE,
+		state, redirect, machineID, deviceID,
+	)
+	fingerprint := url.Values{}
+	fingerprint.Set("x_device_id", deviceID)
+	fingerprint.Set("x_machine_id", machineID)
+	fingerprint.Set("x_device_type", "Windows")
+	fingerprint.Set("x_os_version", "10.0")
+	fingerprint.Set("x_app_version", profile.AppVersion)
+	fingerprint.Set("x_app_type", authorizationAppType)
+	fingerprint.Set("code_challenge", challenge)
+	fingerprint.Set("code_challenge_method", "S256")
 
 	return BrowserAuthorization{
-		AuthorizationURL: consoleURL + "/authorization?" + query.Encode(),
+		AuthorizationURL: base + "&" + fingerprint.Encode(),
 		DeviceState: AuthorizationDriverState{
 			State: state, Verifier: verifier, PrivateKey: privateKeyPEM,
 			PublicKey: publicKeyPEM, DeviceID: deviceID, MachineID: machineID,
@@ -228,7 +231,10 @@ func CompleteBrowserAuthorization(
 // （JSON 字符串）内，state 不保证回传，缺失时由 control 按渠道关联最近阶段。
 func ParseAuthorizationCallback(query url.Values) (subscriptionruntime.AuthorizationCallback, error) {
 	result := subscriptionruntime.AuthorizationCallback{
-		State: firstNonEmpty(query.Get("state"), query.Get("login_trace_id")),
+		// 授权页回调使用 loginTraceID；保留 state/login_trace_id 以兼容手工粘贴。
+		State: firstNonEmpty(
+			query.Get("loginTraceID"), query.Get("login_trace_id"), query.Get("state"),
+		),
 	}
 	if raw := strings.TrimSpace(query.Get("authCodeInfo")); raw != "" {
 		code, err := authCodeFromInfo(raw)
@@ -333,6 +339,18 @@ func randomDigits(size int) string {
 		digits[0] = '1'
 	}
 	return string(digits)
+}
+
+// newUUID 生成客户端同款的 v4 UUID（登录页把它作为 login_trace_id 回传）。
+func newUUID() string {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		sum := sha256.Sum256([]byte(strconv.FormatInt(time.Now().UnixNano(), 10)))
+		copy(value, sum[:16])
+	}
+	value[6] = value[6]&0x0f | 0x40
+	value[8] = value[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", value[0:4], value[4:6], value[6:8], value[8:10], value[10:16])
 }
 
 func deviceName(machineID string) string {

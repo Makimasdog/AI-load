@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -35,8 +36,19 @@ func TestBeginBrowserAuthorizationBuildsClientURL(t *testing.T) {
 		t.Fatalf("authorization query = %#v", query)
 	}
 	callback := query.Get("auth_callback_url")
-	if !strings.HasPrefix(callback, RedirectURI(profile)+"?state=") {
-		t.Fatalf("auth_callback_url = %q", callback)
+	// 授权页会用 ^http://127.0.0.1:(\d+)/authorize$ 校验回调地址。
+	if callback != RedirectURI(profile) {
+		t.Fatalf("auth_callback_url = %q, want %q", callback, RedirectURI(profile))
+	}
+	if !regexp.MustCompile(`^http://127\.0\.0\.1:(\d+)/authorize$`).MatchString(callback) {
+		t.Fatalf("auth_callback_url is rejected by the console: %q", callback)
+	}
+	if query.Get("plugin_version") != profile.BuildVersion {
+		t.Fatalf("plugin_version = %q, want %q", query.Get("plugin_version"), profile.BuildVersion)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).
+		MatchString(query.Get("login_trace_id")) {
+		t.Fatalf("login_trace_id is not a v4 UUID: %q", query.Get("login_trace_id"))
 	}
 	if value.DeviceState.DeviceID == "" || len(value.DeviceState.DeviceID) != 19 ||
 		len(value.DeviceState.MachineID) != 64 ||
@@ -79,8 +91,8 @@ func TestParseAuthorizationCallbackFallsBackToTraceID(t *testing.T) {
 	t.Parallel()
 	info := `{"AuthCode":"code-456"}`
 	parsed, err := ParseAuthorizationCallback(url.Values{
-		"login_trace_id": {"trace-1"},
-		"authCodeInfo":   {info},
+		"loginTraceID": {"trace-1"},
+		"authCodeInfo": {info},
 	})
 	if err != nil {
 		t.Fatal(err)

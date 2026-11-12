@@ -65,8 +65,11 @@ type Profile struct {
 	AuthPrefix string
 	UserAgent  string
 	// AppVersion/VersionCode 会被上游用于版本校验，可被凭证覆盖。
-	AppVersion   string
-	VersionCode  string
+	AppVersion  string
+	VersionCode string
+	// BuildVersion 是客户端 product.json 的 tronBuildVersion，登录 URL 的
+	// plugin_version 必须用它；为空时退回 "local"。
+	BuildVersion string
 	Region       string
 	StoreCountry string
 }
@@ -90,7 +93,8 @@ var (
 		AuthPrefix:         "Cloud-IDE-JWT",
 		UserAgent:          "Trae CN/3.4.18",
 		AppVersion:         "3.4.18", VersionCode: "20250325",
-		Region: "CN",
+		BuildVersion: "2.3.102387",
+		Region:       "CN",
 	}
 	// IntlProfile 是国际版渠道（trae-intl）。
 	IntlProfile = Profile{
