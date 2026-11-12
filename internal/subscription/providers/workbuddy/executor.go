@@ -669,6 +669,9 @@ func normalizeStreamChunk(payload []byte) ([]byte, error) {
 					delete(delta, "reasoning")
 					changed = true
 				}
+				if sanitizeEmptyDeltaFields(delta) {
+					changed = true
+				}
 			}
 		}
 	}
@@ -676,6 +679,49 @@ func normalizeStreamChunk(payload []byte) ([]byte, error) {
 		return payload, nil
 	}
 	return json.Marshal(chunk)
+}
+
+// sanitizeEmptyDeltaFields 删除上游每个 chunk 都携带的空占位字段。
+// 这些字段对 OpenAI 语义等价于「不存在」，但部分客户端（如 zcode）会把
+// 非 null 的 tool_calls 当成工具调用信号，导致每收到一个 reasoning 分片
+// 就结束并重开一个思考块，思考内容因此被切成多段。
+func sanitizeEmptyDeltaFields(fields map[string]any) bool {
+	changed := false
+	if value, ok := fields["tool_calls"]; ok {
+		switch typed := value.(type) {
+		case nil:
+			delete(fields, "tool_calls")
+			changed = true
+		case []any:
+			if len(typed) == 0 {
+				delete(fields, "tool_calls")
+				changed = true
+			}
+		}
+	}
+	if value, ok := fields["function_call"]; ok {
+		switch typed := value.(type) {
+		case nil:
+			delete(fields, "function_call")
+			changed = true
+		case map[string]any:
+			if stringValue(typed["name"]) == "" && stringValue(typed["arguments"]) == "" {
+				delete(fields, "function_call")
+				changed = true
+			}
+		}
+	}
+	if value, ok := fields["refusal"]; ok {
+		if text, isString := value.(string); isString && text == "" {
+			delete(fields, "refusal")
+			changed = true
+		}
+	}
+	if value, ok := fields["extra_fields"]; ok && value == nil {
+		delete(fields, "extra_fields")
+		changed = true
+	}
+	return changed
 }
 
 func normalizeUsageField(chunk map[string]any) bool {

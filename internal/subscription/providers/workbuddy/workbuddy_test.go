@@ -188,6 +188,69 @@ func TestReasoningCoalescerMergesTokenDeltas(t *testing.T) {
 	}
 }
 
+func TestNormalizeStreamChunkDropsEmptyPlaceholderFields(t *testing.T) {
+	normalized, err := normalizeStreamChunk(chunkJSON(
+		`{"content":"","reasoning_content":"thinking","function_call":null,"refusal":"","tool_calls":[],"extra_fields":null}`,
+	))
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	var chunk map[string]any
+	if err := json.Unmarshal(normalized, &chunk); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	delta := chunk["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
+	for _, key := range []string{"tool_calls", "function_call", "refusal", "extra_fields"} {
+		if _, exists := delta[key]; exists {
+			t.Fatalf("empty placeholder %q survived: %v", key, delta)
+		}
+	}
+	if delta["reasoning_content"] != "thinking" || delta["content"] != "" {
+		t.Fatalf("delta content changed: %v", delta)
+	}
+
+	normalized, err = normalizeStreamChunk(chunkJSON(
+		`{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}`,
+	))
+	if err != nil {
+		t.Fatalf("normalize tool call: %v", err)
+	}
+	var withCalls map[string]any
+	if err := json.Unmarshal(normalized, &withCalls); err != nil {
+		t.Fatalf("decode tool call: %v", err)
+	}
+	calls := withCalls["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)["tool_calls"]
+	if list, ok := calls.([]any); !ok || len(list) != 1 {
+		t.Fatalf("non-empty tool_calls dropped: %v", calls)
+	}
+
+	normalized, err = normalizeStreamChunk(chunkJSON(`{"function_call":{"arguments":"","name":""}}`))
+	if err != nil {
+		t.Fatalf("normalize empty function call: %v", err)
+	}
+	var emptyCall map[string]any
+	if err := json.Unmarshal(normalized, &emptyCall); err != nil {
+		t.Fatalf("decode empty function call: %v", err)
+	}
+	emptyDelta := emptyCall["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
+	if _, exists := emptyDelta["function_call"]; exists {
+		t.Fatalf("empty function_call survived: %v", emptyDelta)
+	}
+
+	normalized, err = normalizeStreamChunk(chunkJSON(`{"function_call":{"arguments":"{}","name":"lookup"}}`))
+	if err != nil {
+		t.Fatalf("normalize function call: %v", err)
+	}
+	var keptCall map[string]any
+	if err := json.Unmarshal(normalized, &keptCall); err != nil {
+		t.Fatalf("decode function call: %v", err)
+	}
+	keptDelta := keptCall["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
+	if _, exists := keptDelta["function_call"]; !exists {
+		t.Fatalf("non-empty function_call dropped: %v", keptDelta)
+	}
+}
+
 func TestClassifyHTTPError(t *testing.T) {
 	cases := []struct {
 		status     int
