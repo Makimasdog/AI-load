@@ -267,6 +267,14 @@ func traeErrorSummary(status int, code, upstreamMessage string) string {
 		return "设备指纹校验失败，请重新导入包含设备信息的凭证"
 	case "missing_access_token":
 		return "该 Trae 凭证缺少 access_token，请重新导入或先执行刷新"
+	case "model_not_in_catalog":
+		// 网关目录（batch_get_detail_param）里没有该模型，通常是只走客户端
+		// 远程服务的新模型，或账号侧已停用的自建配置。直接给结论，避免把
+		// 4001/4028 这类上游噪音抛给调用方。
+		if upstreamMessage != "" {
+			return upstreamMessage
+		}
+		return "该模型仅支持 Trae 客户端远程服务，网关暂不支持"
 	}
 	switch {
 	case status == http.StatusUnauthorized:

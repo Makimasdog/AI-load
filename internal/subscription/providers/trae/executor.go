@@ -381,7 +381,21 @@ func normalizeRequestBody(ctx context.Context, raw []byte, model string, credent
 	// llm_raw_chat 要求 config_name 来自 batch_get_detail_param，model_name 是
 	// 该配置下的真实模型 id（如 DeepSeek-V4-Flash__dev）；直接用展示名会被
 	// 上游以 4001（param invalid）拒绝。
-	resolved := resolveChatModel(ctx, profile, credential, modelName)
+	resolved, found := resolveChatModel(ctx, profile, credential, modelName)
+	if !found {
+		// 目录里没有这个模型：可能是仅支持 Trae 客户端远程服务的新模型，
+		// 也可能是已停用配置。不能再退化成裸参数去试探上游，否则用户只会
+		// 看到 4001/4028 这类无法定位业务含义的错误。
+		return nil, &UpstreamError{
+			Status: http.StatusBadRequest,
+			Code:   "model_not_in_catalog",
+			Message: fmt.Sprintf(
+				"模型 %q 不在当前 Trae 账号的 llm_raw_chat 目录中：它可能只在 Trae 客户端的远程服务里可用，网关暂不支持。",
+				modelName,
+			),
+			Model: true,
+		}
+	}
 	slog.Info("trae model resolved", "v", resolved.ConfigName+"|"+resolved.ModelName)
 	modelName = resolved.ModelName
 	body["config_name"] = resolved.ConfigName
@@ -630,9 +644,11 @@ type chatModelDetail struct {
 }
 
 // hasProviderBinding 判断自建条目是否带齐调用所需的 provider 与 custom_model_id。
+// 已停用的模型（客户端关 key 后 custom_config.status=false）不算可用绑定。
 func hasProviderBinding(details []chatModelDetail) bool {
 	for _, detail := range details {
-		if strings.TrimSpace(detail.Provider) != "" && numeric(detail.CustomConfig.CustomModelID) > 0 {
+		if detail.CustomConfig.Status &&
+			strings.TrimSpace(detail.Provider) != "" && numeric(detail.CustomConfig.CustomModelID) > 0 {
 			return true
 		}
 	}
@@ -682,38 +698,41 @@ func chatCatalogRequest() map[string]any {
 }
 
 // resolveChatModel 把客户端传入的模型名解析成上游要求的配置三元组。
-// 命中不了目录时退回原值，保持与旧行为一致。
-func resolveChatModel(ctx context.Context, profile Profile, value Credential, model string) chatModelConfig {
+// 目录可用但模型不在其中时返回 ok=false：此时不应再用原值去试探上游，
+// 否则已停用的自建配置会以 4028、远程服务专属模型会以 4001 结束。
+// 只有目录本身拉取失败时才退回原值，保持旧行为。
+func resolveChatModel(ctx context.Context, profile Profile, value Credential, model string) (chatModelConfig, bool) {
 	trimmed := strings.TrimSpace(model)
 	fallback := chatModelConfig{ConfigName: trimmed, ModelName: trimmed, ConfigSource: 1}
 	key := strings.ToLower(trimmed)
 	if key == "" {
-		return fallback
+		return fallback, true
 	}
 	if strings.TrimSpace(value.AccessToken) == "" {
-		return fallback
+		return fallback, true
 	}
 	cacheKey := firstNonEmpty(strings.TrimSpace(value.UID), strings.TrimSpace(value.DeviceID))
 	if entry, ok := chatCatalogCache.Load(cacheKey); ok {
 		cached := entry.(cachedChatCatalog)
 		if time.Since(cached.fetchedAt) < chatCatalogTTL {
 			if resolved, hit := cached.models[key]; hit {
-				return resolved
+				return resolved, true
 			}
-			return fallback
+			slog.Warn("trae model missing from catalog", "model", key, "size", len(cached.models))
+			return chatModelConfig{}, false
 		}
 	}
 	models, err := fetchChatCatalog(ctx, profile, value)
 	if err != nil {
 		slog.Warn("trae model catalog unavailable", "realm", profile.Key, "error", err)
-		return fallback
+		return fallback, true
 	}
 	chatCatalogCache.Store(cacheKey, cachedChatCatalog{fetchedAt: time.Now(), models: models})
 	if resolved, hit := models[key]; hit {
-		return resolved
+		return resolved, true
 	}
 	slog.Warn("trae model missing from catalog", "model", key, "size", len(models))
-	return fallback
+	return chatModelConfig{}, false
 }
 
 // fetchChatCatalog 拉取账号可用的模型目录，建立 展示名/配置名/真实模型名 的索引。
@@ -756,6 +775,7 @@ func fetchChatCatalog(ctx context.Context, profile Profile, value Credential) (m
 			ConfigInfoList []struct {
 				ConfigName    string `json:"config_name"`
 				ConfigSource  int    `json:"config_source"`
+				ConfigSwitch  bool   `json:"config_switch"`
 				DisplayConfig struct {
 					DisplayName     string `json:"display_name"`
 					IsCustomModel   bool   `json:"is_custom_model"`
@@ -802,6 +822,13 @@ func fetchChatCatalog(ctx context.Context, profile Profile, value Credential) (m
 			// llm_raw_chat 会代理到模型服务商，缺了只会返回 4001。
 			custom := info.ConfigSource != 1
 			if custom {
+				// 客户端关闭自建模型的 key 后，条目不会从目录消失，只会把
+				// config_switch 与 custom_config.status 置为 false。这类配置
+				// 仍能通过参数校验，但上游必然以 4028 拒绝，因此必须在目录
+				// 阶段排除，不能让它们参与任何模型名解析。
+				if !info.ConfigSwitch {
+					continue
+				}
 				if !info.DisplayConfig.IsCustomModel || !hasProviderBinding(info.ModelDetailList) {
 					continue
 				}
@@ -817,7 +844,8 @@ func fetchChatCatalog(ctx context.Context, profile Profile, value Credential) (m
 			}
 			if custom {
 				for _, detail := range info.ModelDetailList {
-					if strings.TrimSpace(detail.Provider) == "" ||
+					if !detail.CustomConfig.Status ||
+						strings.TrimSpace(detail.Provider) == "" ||
 						numeric(detail.CustomConfig.CustomModelID) == 0 {
 						continue
 					}
@@ -827,6 +855,9 @@ func fetchChatCatalog(ctx context.Context, profile Profile, value Credential) (m
 				}
 			}
 			for _, detail := range info.ModelDetailList {
+				if custom && !detail.CustomConfig.Status {
+					continue
+				}
 				name := strings.TrimSpace(detail.ModelName)
 				if name == "" {
 					continue
