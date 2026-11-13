@@ -199,15 +199,16 @@ func (manager *OAuthCallbackManager) serveHTTP(
 		http.NotFound(writer, request)
 		return
 	}
-	callback, err := parseOAuthCallbackQuery(request.URL.Query())
+	callback, fallbackChannel, err := manager.parseCallbackQuery(spec, request.URL.Query())
 	if err != nil {
 		writeOAuthResult(writer, oauthCallbackOutcome{Kind: oauthOutcomeInvalid})
 		return
 	}
 	if callback.ProviderError != "" {
-		if err := manager.service.failCredentialAuthorizationFromCallback(
+		if err := manager.service.failCredentialAuthorizationFromCallbackForChannel(
 			request.Context(),
 			spec,
+			fallbackChannel,
 			callback.State,
 			callback.ProviderError,
 		); err != nil {
@@ -217,9 +218,10 @@ func (manager *OAuthCallbackManager) serveHTTP(
 		writeOAuthResult(writer, oauthCallbackOutcome{Kind: oauthOutcomeDenied})
 		return
 	}
-	result, err := manager.service.completeCredentialAuthorizationFromCallback(
+	result, err := manager.service.completeCredentialAuthorizationFromCallbackForChannel(
 		request.Context(),
 		spec,
+		fallbackChannel,
 		callback.State,
 		callback.Code,
 	)
@@ -246,6 +248,70 @@ func classifyOAuthCallbackFailure(err error) oauthCallbackOutcomeKind {
 	}
 }
 
+// parseCallbackQuery prefers the channel driver's own callback grammar. Trae,
+// for example, delivers {"AuthCode": ...} in an authCodeInfo parameter and
+// never echoes an OAuth state, so the generic state/code parser cannot read it.
+func (manager *OAuthCallbackManager) parseCallbackQuery(
+	spec subscriptionruntime.LocalCallbackSpec,
+	query url.Values,
+) (oauthCallbackParameters, channel.ID, error) {
+	if manager == nil || manager.service == nil {
+		parsed, err := parseOAuthCallbackQuery(query)
+		return parsed, "", err
+	}
+	return resolveAuthorizationCallbackQuery(manager.service.subscriptions, spec, query)
+}
+
+func resolveAuthorizationCallbackQuery(
+	subscriptions *subscriptionruntime.Runtime,
+	spec subscriptionruntime.LocalCallbackSpec,
+	query url.Values,
+) (oauthCallbackParameters, channel.ID, error) {
+	channelID, parser, ok := callbackQueryParser(subscriptions, spec)
+	if !ok {
+		parsed, err := parseOAuthCallbackQuery(query)
+		return parsed, "", err
+	}
+	parsed, err := parser.ParseAuthorizationCallback(query)
+	if err != nil {
+		return oauthCallbackParameters{}, "", err
+	}
+	parameters := oauthCallbackParameters{
+		State: parsed.State, Code: parsed.Code, ProviderError: parsed.ProviderError,
+	}
+	if strings.TrimSpace(parameters.State) != "" {
+		return parameters, "", nil
+	}
+	if parser.AuthorizationStateRequired() {
+		return oauthCallbackParameters{}, "", errors.New("invalid OAuth callback state")
+	}
+	// 没有 state 时只能按渠道关联最近的待授权阶段；PKCE verifier 仍在加密
+	// 阶段载荷里，错误的授权码无法换取 token。
+	return parameters, channelID, nil
+}
+
+func callbackQueryParser(
+	subscriptions *subscriptionruntime.Runtime,
+	spec subscriptionruntime.LocalCallbackSpec,
+) (channel.ID, subscriptionruntime.CallbackQueryParser, bool) {
+	if subscriptions == nil {
+		return "", nil, false
+	}
+	channelID, ok := subscriptions.ChannelForLocalCallback(spec.RedirectURI)
+	if !ok {
+		return "", nil, false
+	}
+	driver, ok := subscriptions.Driver(channelID)
+	if !ok {
+		return "", nil, false
+	}
+	parser, ok := driver.(subscriptionruntime.CallbackQueryParser)
+	if !ok {
+		return "", nil, false
+	}
+	return channelID, parser, true
+}
+
 func parseLocalCallbackEndpoint(spec subscriptionruntime.LocalCallbackSpec) (string, string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(spec.RedirectURI))
 	if err != nil || !parsed.IsAbs() || parsed.Opaque != "" || parsed.User != nil || parsed.Fragment != "" ||
@@ -263,22 +329,32 @@ func parseLocalCallbackEndpoint(spec subscriptionruntime.LocalCallbackSpec) (str
 }
 
 func parseManualOAuthCallbackURL(raw string, spec subscriptionruntime.LocalCallbackSpec) (oauthCallbackParameters, error) {
+	query, err := parseManualOAuthCallbackValues(raw, spec)
+	if err != nil {
+		return oauthCallbackParameters{}, err
+	}
+	return parseOAuthCallbackQuery(query)
+}
+
+// parseManualOAuthCallbackValues validates the pasted loopback URL and returns
+// its query so provider-specific callback grammars can be applied afterwards.
+func parseManualOAuthCallbackValues(raw string, spec subscriptionruntime.LocalCallbackSpec) (url.Values, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || len(raw) > 16*1024 {
-		return oauthCallbackParameters{}, errors.New("invalid OAuth callback URL")
+		return nil, errors.New("invalid OAuth callback URL")
 	}
 	expected, err := url.Parse(spec.RedirectURI)
 	if err != nil {
-		return oauthCallbackParameters{}, errors.New("invalid OAuth callback URL")
+		return nil, errors.New("invalid OAuth callback URL")
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil || !parsed.IsAbs() || !strings.EqualFold(parsed.Scheme, "http") ||
 		parsed.User != nil || parsed.Fragment != "" ||
 		!strings.EqualFold(parsed.Hostname(), expected.Hostname()) ||
 		parsed.Port() != expected.Port() || parsed.EscapedPath() != expected.EscapedPath() {
-		return oauthCallbackParameters{}, errors.New("invalid OAuth callback URL")
+		return nil, errors.New("invalid OAuth callback URL")
 	}
-	return parseOAuthCallbackQuery(parsed.Query())
+	return parsed.Query(), nil
 }
 
 func parseOAuthCallbackQuery(query url.Values) (oauthCallbackParameters, error) {

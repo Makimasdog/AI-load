@@ -191,6 +191,23 @@ type BrowserAuthorizationDriver interface {
 	LocalCallback() (LocalCallbackSpec, bool)
 }
 
+// AuthorizationCallback is the provider-neutral view of one loopback callback.
+type AuthorizationCallback struct {
+	State         string
+	Code          string
+	ProviderError string
+}
+
+// CallbackQueryParser lets a browser driver whose console does not speak the
+// OAuth state/code query adapt its own callback parameters. Implementations
+// must reject ambiguous or malformed input instead of guessing.
+type CallbackQueryParser interface {
+	ParseAuthorizationCallback(url.Values) (AuthorizationCallback, error)
+	// AuthorizationStateRequired reports whether a callback without state may
+	// be correlated with the newest pending stage of the same channel.
+	AuthorizationStateRequired() bool
+}
+
 // DeviceAuthorization describes one RFC 8628 device challenge. DriverState
 // contains secrets and is persisted only inside the encrypted Stage payload.
 type DeviceAuthorization struct {
@@ -554,6 +571,21 @@ func (runtime *Runtime) LocalCallback(channelID channel.ID) (LocalCallbackSpec, 
 		return LocalCallbackSpec{}, false
 	}
 	return *value.callback, true
+}
+
+// ChannelForLocalCallback resolves the channel that declared one fixed
+// loopback callback URI. Callback handlers use it to select the driver that
+// understands the provider's query parameters.
+func (runtime *Runtime) ChannelForLocalCallback(redirectURI string) (channel.ID, bool) {
+	if runtime == nil {
+		return "", false
+	}
+	for channelID, value := range runtime.byChannel {
+		if value.callback != nil && value.callback.RedirectURI == redirectURI {
+			return channelID, true
+		}
+	}
+	return "", false
 }
 
 // CanonicalCredential validates one channel-bound subscription credential and

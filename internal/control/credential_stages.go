@@ -747,7 +747,7 @@ func (s *Service) CompleteCredentialAuthorization(
 	returnedState string,
 	code string,
 ) (CredentialStageResult, error) {
-	return s.completeCredentialAuthorization(ctx, "", "", returnedState, code)
+	return s.completeCredentialAuthorization(ctx, "", "", returnedState, code, "")
 }
 
 func (s *Service) completeCredentialAuthorizationForStage(
@@ -759,7 +759,7 @@ func (s *Service) completeCredentialAuthorizationForStage(
 	if strings.TrimSpace(stageID) == "" {
 		return CredentialStageResult{}, app_errors.ErrAuthorizationStateInvalid
 	}
-	return s.completeCredentialAuthorization(ctx, stageID, "", returnedState, code)
+	return s.completeCredentialAuthorization(ctx, stageID, "", returnedState, code, "")
 }
 
 func (s *Service) completeCredentialAuthorizationFromCallback(
@@ -768,7 +768,19 @@ func (s *Service) completeCredentialAuthorizationFromCallback(
 	returnedState string,
 	code string,
 ) (CredentialStageResult, error) {
-	return s.completeCredentialAuthorization(ctx, "", callback.RedirectURI, returnedState, code)
+	return s.completeCredentialAuthorization(ctx, "", callback.RedirectURI, returnedState, code, "")
+}
+
+// completeCredentialAuthorizationFromCallbackForChannel correlates a callback
+// that carried no state with the newest pending stage of the owning channel.
+func (s *Service) completeCredentialAuthorizationFromCallbackForChannel(
+	ctx context.Context,
+	callback subscriptionruntime.LocalCallbackSpec,
+	fallbackChannelID channel.ID,
+	returnedState string,
+	code string,
+) (CredentialStageResult, error) {
+	return s.completeCredentialAuthorization(ctx, "", callback.RedirectURI, returnedState, code, fallbackChannelID)
 }
 
 func (s *Service) completeCredentialAuthorization(
@@ -777,17 +789,25 @@ func (s *Service) completeCredentialAuthorization(
 	expectedRedirectURI string,
 	returnedState string,
 	code string,
+	fallbackChannelID channel.ID,
 ) (CredentialStageResult, error) {
-	if s == nil || s.completeSubscriptionAuthorization == nil || strings.TrimSpace(returnedState) == "" ||
-		strings.TrimSpace(code) == "" {
+	returnedState = strings.TrimSpace(returnedState)
+	if s == nil || s.completeSubscriptionAuthorization == nil ||
+		(returnedState == "" && fallbackChannelID == "") || strings.TrimSpace(code) == "" {
 		return CredentialStageResult{}, app_errors.ErrAuthorizationStateInvalid
 	}
-	stateHash := s.encryption.Hash("oauth-state/v1|" + returnedState)
+	var stateHash string
 	var row models.CredentialStage
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		query := tx.Where("oauth_state_hash = ? AND status = ?", stateHash, models.CredentialStagePendingAuthorization)
+		query := tx.Where("status = ?", models.CredentialStagePendingAuthorization)
 		if stageID != "" {
 			query = query.Where("id = ?", stageID)
+		}
+		if returnedState != "" {
+			stateHash = s.encryption.Hash("oauth-state/v1|" + returnedState)
+			query = query.Where("oauth_state_hash = ?", stateHash)
+		} else {
+			query = query.Where("channel_id = ?", string(fallbackChannelID)).Order("created_at_ms DESC")
 		}
 		if err := query.Take(&row).Error; err != nil {
 			return err
@@ -799,7 +819,8 @@ func (s *Service) completeCredentialAuthorization(
 			return app_errors.ErrStagedCredentialExpired
 		}
 		result := tx.Model(&models.CredentialStage{}).
-			Where("id = ? AND status = ? AND oauth_state_hash = ?", row.ID, models.CredentialStagePendingAuthorization, stateHash).
+			Where("id = ? AND status = ? AND encrypted_payload = ?",
+				row.ID, models.CredentialStagePendingAuthorization, row.EncryptedPayload).
 			Updates(map[string]any{
 				"status": models.CredentialStageExchanging, "oauth_state_hash": nil,
 				"expires_at_ms": s.now().Add(defaultSubscriptionControlTimeout).UnixMilli(),
@@ -881,14 +902,14 @@ func (s *Service) completeCredentialAuthorization(
 // FailCredentialAuthorization consumes a provider rejection without retaining
 // its untrusted query text or leaving the Stage pending until expiry.
 func (s *Service) FailCredentialAuthorization(ctx context.Context, returnedState string, providerError string) error {
-	return s.failCredentialAuthorization(ctx, "", "", returnedState, providerError)
+	return s.failCredentialAuthorization(ctx, "", "", returnedState, providerError, "")
 }
 
 func (s *Service) failCredentialAuthorizationForStage(ctx context.Context, stageID string, returnedState string, providerError string) error {
 	if strings.TrimSpace(stageID) == "" {
 		return app_errors.ErrAuthorizationStateInvalid
 	}
-	return s.failCredentialAuthorization(ctx, stageID, "", returnedState, providerError)
+	return s.failCredentialAuthorization(ctx, stageID, "", returnedState, providerError, "")
 }
 
 func (s *Service) failCredentialAuthorizationFromCallback(
@@ -897,7 +918,19 @@ func (s *Service) failCredentialAuthorizationFromCallback(
 	returnedState string,
 	providerError string,
 ) error {
-	return s.failCredentialAuthorization(ctx, "", callback.RedirectURI, returnedState, providerError)
+	return s.failCredentialAuthorization(ctx, "", callback.RedirectURI, returnedState, providerError, "")
+}
+
+// failCredentialAuthorizationFromCallbackForChannel resolves a rejection that
+// carried no state against the newest pending stage of the owning channel.
+func (s *Service) failCredentialAuthorizationFromCallbackForChannel(
+	ctx context.Context,
+	callback subscriptionruntime.LocalCallbackSpec,
+	fallbackChannelID channel.ID,
+	returnedState string,
+	providerError string,
+) error {
+	return s.failCredentialAuthorization(ctx, "", callback.RedirectURI, returnedState, providerError, fallbackChannelID)
 }
 
 func (s *Service) failCredentialAuthorization(
@@ -906,8 +939,11 @@ func (s *Service) failCredentialAuthorization(
 	expectedRedirectURI string,
 	returnedState string,
 	providerError string,
+	fallbackChannelID channel.ID,
 ) error {
-	if s == nil || strings.TrimSpace(returnedState) == "" || strings.TrimSpace(providerError) == "" {
+	returnedState = strings.TrimSpace(returnedState)
+	if s == nil || strings.TrimSpace(providerError) == "" ||
+		(returnedState == "" && fallbackChannelID == "") {
 		return app_errors.ErrAuthorizationStateInvalid
 	}
 	errorCode := "authorization_failed"
@@ -915,17 +951,24 @@ func (s *Service) failCredentialAuthorization(
 		errorCode = "authorization_denied"
 	}
 	nowMS := s.now().UnixMilli()
-	stateHash := s.encryption.Hash("oauth-state/v1|" + returnedState)
+	var stateHash string
+	if returnedState != "" {
+		stateHash = s.encryption.Hash("oauth-state/v1|" + returnedState)
+	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var row models.CredentialStage
 		query := tx.Where(
-			"oauth_state_hash = ? AND status = ? AND expires_at_ms > ?",
-			stateHash,
+			"status = ? AND expires_at_ms > ?",
 			models.CredentialStagePendingAuthorization,
 			nowMS,
 		)
 		if stageID != "" {
 			query = query.Where("id = ?", stageID)
+		}
+		if returnedState != "" {
+			query = query.Where("oauth_state_hash = ?", stateHash)
+		} else {
+			query = query.Where("channel_id = ?", string(fallbackChannelID)).Order("created_at_ms DESC")
 		}
 		if err := query.Take(&row).Error; err != nil {
 			return err
@@ -934,7 +977,8 @@ func (s *Service) failCredentialAuthorization(
 			return app_errors.ErrAuthorizationStateInvalid
 		}
 		result := tx.Model(&models.CredentialStage{}).
-			Where("id = ? AND oauth_state_hash = ? AND status = ?", row.ID, stateHash, models.CredentialStagePendingAuthorization).
+			Where("id = ? AND status = ? AND encrypted_payload = ?",
+				row.ID, models.CredentialStagePendingAuthorization, row.EncryptedPayload).
 			Updates(map[string]any{
 				"status": models.CredentialStageFailed, "encrypted_payload": "",
 				"oauth_state_hash": nil, "error_code": errorCode, "updated_at_ms": nowMS,
@@ -980,7 +1024,11 @@ func (s *Service) CompleteCredentialAuthorizationCallback(
 	if !ok {
 		return CredentialStageResult{}, app_errors.ErrAuthorizationStateInvalid
 	}
-	callback, err := parseManualOAuthCallbackURL(rawCallbackURL, callbackSpec)
+	query, err := parseManualOAuthCallbackValues(rawCallbackURL, callbackSpec)
+	if err != nil {
+		return CredentialStageResult{}, app_errors.ErrValidation
+	}
+	callback, fallbackChannel, err := resolveAuthorizationCallbackQuery(s.subscriptions, callbackSpec, query)
 	if err != nil {
 		return CredentialStageResult{}, app_errors.ErrValidation
 	}
@@ -991,6 +1039,7 @@ func (s *Service) CompleteCredentialAuthorizationCallback(
 			callbackSpec.RedirectURI,
 			callback.State,
 			callback.ProviderError,
+			fallbackChannel,
 		); err != nil {
 			return CredentialStageResult{}, err
 		}
@@ -1002,6 +1051,7 @@ func (s *Service) CompleteCredentialAuthorizationCallback(
 		callbackSpec.RedirectURI,
 		callback.State,
 		callback.Code,
+		fallbackChannel,
 	)
 }
 

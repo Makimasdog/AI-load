@@ -10,6 +10,7 @@ import (
 	"gpt-load/internal/subscription/providers/devin"
 	"gpt-load/internal/subscription/providers/grok"
 	"gpt-load/internal/subscription/providers/muse"
+	"gpt-load/internal/subscription/providers/trae"
 	"gpt-load/internal/subscription/providers/workbuddy"
 	subscriptionruntime "gpt-load/internal/subscription/runtime"
 )
@@ -22,6 +23,7 @@ func Implementations() []subscriptionruntime.Implementations {
 		grok.Implementations(),
 		muse.Implementations(),
 		workbuddy.Implementations(),
+		trae.Implementations(),
 		devin.Implementations(),
 	}
 }

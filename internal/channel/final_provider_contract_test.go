@@ -19,6 +19,8 @@ func TestFinalRegistryContainsOnlyApprovedChannels(t *testing.T) {
 		Grok,
 		Muse,
 		WorkBuddy,
+		Trae,
+		TraeIntl,
 		Devin,
 		Anthropic,
 		Gemini,

@@ -16,7 +16,7 @@ func TestRuntimeCompilesAllSubscriptionProviderCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := runtime.ChannelIDs(), []channel.ID{channel.Antigravity, channel.Claude, channel.Codex, channel.Devin, channel.Grok, channel.Muse, channel.WorkBuddy}; !reflect.DeepEqual(got, want) {
+	if got, want := runtime.ChannelIDs(), []channel.ID{channel.Antigravity, channel.Claude, channel.Codex, channel.Devin, channel.Grok, channel.Muse, channel.Trae, channel.TraeIntl, channel.WorkBuddy}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ChannelIDs() = %v, want %v", got, want)
 	}
 	tests := []struct {
@@ -33,6 +33,8 @@ func TestRuntimeCompilesAllSubscriptionProviderCapabilities(t *testing.T) {
 		{channel.Devin, string(modules.DevinSubscriptionDriver), string(modules.DevinModelDiscovery), string(modules.DevinQuotaObservation), ""},
 		{channel.Muse, string(modules.MuseSubscriptionDriver), string(modules.MuseModelDiscovery), "", ""},
 		{channel.WorkBuddy, string(modules.WorkBuddySubscriptionDriver), string(modules.WorkBuddyModelDiscovery), string(modules.WorkBuddyQuotaObservation), ""},
+		{channel.Trae, string(modules.TraeSubscriptionDriver), string(modules.TraeModelDiscovery), string(modules.TraeQuotaObservation), ""},
+		{channel.TraeIntl, string(modules.TraeIntlSubscriptionDriver), string(modules.TraeIntlModelDiscovery), string(modules.TraeIntlQuotaObservation), ""},
 	}
 	for _, test := range tests {
 		t.Run(string(test.channelID), func(t *testing.T) {

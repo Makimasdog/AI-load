@@ -30,6 +30,8 @@ const (
 	Grok             = spec.Grok
 	Muse             = spec.Muse
 	WorkBuddy        = spec.WorkBuddy
+	Trae             = spec.Trae
+	TraeIntl         = spec.TraeIntl
 	Devin            = spec.Devin
 	Anthropic        = spec.Anthropic
 	Gemini           = spec.Gemini
@@ -239,6 +241,8 @@ const (
 	ProviderGrok                 = spec.ProviderGrok
 	ProviderMuse                 = spec.ProviderMuse
 	ProviderWorkBuddy            = spec.ProviderWorkBuddy
+	ProviderTrae                 = spec.ProviderTrae
+	ProviderTraeIntl             = spec.ProviderTraeIntl
 	ProviderDevin                = spec.ProviderDevin
 	ProviderAnthropic            = spec.ProviderAnthropic
 	ProviderGemini               = spec.ProviderGemini
