@@ -725,7 +725,9 @@ func fetchChatCatalog(ctx context.Context, profile Profile, value Credential) (m
 				ConfigName    string `json:"config_name"`
 				ConfigSource  int    `json:"config_source"`
 				DisplayConfig struct {
-					DisplayName string `json:"display_name"`
+					DisplayName     string `json:"display_name"`
+					IsCustomModel   bool   `json:"is_custom_model"`
+					ModelCapability string `json:"model_capability"`
 				} `json:"display_config"`
 				ModelDetailList []struct {
 					ModelName string `json:"model_name"`
@@ -762,6 +764,15 @@ func fetchChatCatalog(ctx context.Context, profile Profile, value Credential) (m
 		}
 		for _, info := range function.ConfigInfoList {
 			if info.ConfigName == "" {
+				continue
+			}
+			// 只保留官方对话模型：账号自建（source=3）与占位模板（is_custom_model，
+			// 如 custom_model_*）无法通过 llm_raw_chat 调用，上游会返回 4001
+			// （param invalid）或 2001（invalid prompt）。没有 model_capability
+			// 的条目是 summary/title_generation/fast_apply 等内部工具，不是
+			// 对话模型，也不对外暴露。
+			if info.ConfigSource != 1 || info.DisplayConfig.IsCustomModel ||
+				strings.TrimSpace(info.DisplayConfig.ModelCapability) == "" {
 				continue
 			}
 			resolved := chatModelConfig{

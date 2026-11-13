@@ -233,7 +233,10 @@ func traeErrorSummary(status int, code, upstreamMessage string) string {
 	case "1001", "20101":
 		return "登录已失效，请重新导入该账号的 Trae 凭证"
 	case "4001":
-		return "请求被上游拒绝：消息格式或模型名不合法"
+		if upstreamMessage != "" {
+			return "上游 code=4001（模型标识或参数不被接受）：" + upstreamMessage
+		}
+		return "请求被上游拒绝：消息格式或模型名不合法（code=4001）"
 	case "3003":
 		return "上游提示词管线处理失败，请检查消息内容"
 	case "4011":
@@ -243,7 +246,10 @@ func traeErrorSummary(status int, code, upstreamMessage string) string {
 	case "4019":
 		return "账号触发上游风控，已暂停该账号，请稍后重试"
 	case "4023":
-		return "上游不支持或已下线该模型"
+		if upstreamMessage != "" {
+			return "上游 code=4023：" + upstreamMessage
+		}
+		return "上游不支持或已下线该模型（code=4023）"
 	case "1005":
 		if upstreamMessage != "" {
 			return "上游 code=1005（extra=" + upstreamMessage + "）：当前账号套餐不支持该模型配置"
