@@ -237,12 +237,20 @@ func traeErrorSummary(status int, code, upstreamMessage string) string {
 			return "上游 code=4001（模型标识或参数不被接受）：" + upstreamMessage
 		}
 		return "请求被上游拒绝：消息格式或模型名不合法（code=4001）"
-	case "3003":
+	case "3003", "2001":
+		if upstreamMessage != "" {
+			return "上游 code=" + code + "（提示词/消息内容不被接受）：" + upstreamMessage
+		}
 		return "上游提示词管线处理失败，请检查消息内容"
 	case "4011":
 		return "上游把该请求识别为异常流量，请稍后重试"
 	case "4015":
 		return "该账号无权使用此模型，或国际版需要与账号区域一致的出口"
+	case "4028":
+		if upstreamMessage != "" {
+			return "上游 code=4028（自建模型的模型服务商拒绝了密钥）：" + upstreamMessage
+		}
+		return "上游 code=4028：自建模型的服务商密钥无效或已过期"
 	case "4019":
 		return "账号触发上游风控，已暂停该账号，请稍后重试"
 	case "4023":

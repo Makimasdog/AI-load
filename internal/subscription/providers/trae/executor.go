@@ -387,6 +387,13 @@ func normalizeRequestBody(ctx context.Context, raw []byte, model string, credent
 	body["config_name"] = resolved.ConfigName
 	body["model_name"] = resolved.ModelName
 	body["config_source"] = resolved.ConfigSource
+	// 自建模型必须带 provider + custom_model_id + is_custom_model，否则上游
+	// 只回 4001（param invalid）；带齐后由上游代理到对应模型服务商。
+	if resolved.IsCustomModel {
+		body["is_custom_model"] = true
+		body["provider"] = resolved.Provider
+		body["custom_model_id"] = resolved.CustomModelID
+	}
 	body["raw_chat_function"] = rawChatFunction
 	messages, err := normalizeMessages(input["messages"])
 	if err != nil {
@@ -612,10 +619,35 @@ func stableSessionUUID(material string) string {
 }
 
 // chatModelConfig 是一条可用的模型配置：config_name + 真实 model_name + 来源。
+// chatModelDetail 是目录里单个模型变体的原始描述。
+type chatModelDetail struct {
+	ModelName    string `json:"model_name"`
+	Provider     string `json:"provider"`
+	CustomConfig struct {
+		CustomModelID json.Number `json:"custom_model_id"`
+		Status        bool        `json:"status"`
+	} `json:"custom_config"`
+}
+
+// hasProviderBinding 判断自建条目是否带齐调用所需的 provider 与 custom_model_id。
+func hasProviderBinding(details []chatModelDetail) bool {
+	for _, detail := range details {
+		if strings.TrimSpace(detail.Provider) != "" && numeric(detail.CustomConfig.CustomModelID) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 type chatModelConfig struct {
 	ConfigName   string
 	ModelName    string
 	ConfigSource int
+	// 自建模型（config_source=3）必须额外带 provider 与 custom_model_id，
+	// 否则 llm_raw_chat 会返回 4001；带齐后由上游代理到模型服务商。
+	Provider      string
+	CustomModelID int64
+	IsCustomModel bool
 }
 
 type cachedChatCatalog struct {
@@ -729,9 +761,7 @@ func fetchChatCatalog(ctx context.Context, profile Profile, value Credential) (m
 					IsCustomModel   bool   `json:"is_custom_model"`
 					ModelCapability string `json:"model_capability"`
 				} `json:"display_config"`
-				ModelDetailList []struct {
-					ModelName string `json:"model_name"`
-				} `json:"model_detail_list"`
+				ModelDetailList []chatModelDetail `json:"model_detail_list"`
 			} `json:"config_info_list"`
 		} `json:"function_configs"`
 	}
@@ -766,19 +796,35 @@ func fetchChatCatalog(ctx context.Context, profile Profile, value Credential) (m
 			if info.ConfigName == "" {
 				continue
 			}
-			// 只保留官方对话模型：账号自建（source=3）与占位模板（is_custom_model，
-			// 如 custom_model_*）无法通过 llm_raw_chat 调用，上游会返回 4001
-			// （param invalid）或 2001（invalid prompt）。没有 model_capability
-			// 的条目是 summary/title_generation/fast_apply 等内部工具，不是
-			// 对话模型，也不对外暴露。
-			if info.ConfigSource != 1 || info.DisplayConfig.IsCustomModel ||
+			// 官方条目要求有 model_capability；没有的是 summary/title_generation/
+			// fast_apply 等内部工具，不是对话模型。自建条目（source=3）要求
+			// 模型详情里带 provider 与 custom_model_id，缺一不可——带齐后
+			// llm_raw_chat 会代理到模型服务商，缺了只会返回 4001。
+			custom := info.ConfigSource != 1
+			if custom {
+				if !info.DisplayConfig.IsCustomModel || !hasProviderBinding(info.ModelDetailList) {
+					continue
+				}
+			} else if info.DisplayConfig.IsCustomModel ||
 				strings.TrimSpace(info.DisplayConfig.ModelCapability) == "" {
 				continue
 			}
 			resolved := chatModelConfig{
-				ConfigName:   info.ConfigName,
-				ModelName:    info.ConfigName,
-				ConfigSource: info.ConfigSource,
+				ConfigName:    info.ConfigName,
+				ModelName:     info.ConfigName,
+				ConfigSource:  info.ConfigSource,
+				IsCustomModel: custom,
+			}
+			if custom {
+				for _, detail := range info.ModelDetailList {
+					if strings.TrimSpace(detail.Provider) == "" ||
+						numeric(detail.CustomConfig.CustomModelID) == 0 {
+						continue
+					}
+					resolved.Provider = strings.TrimSpace(detail.Provider)
+					resolved.CustomModelID = numeric(detail.CustomConfig.CustomModelID)
+					break
+				}
 			}
 			for _, detail := range info.ModelDetailList {
 				name := strings.TrimSpace(detail.ModelName)
@@ -792,6 +838,10 @@ func fetchChatCatalog(ctx context.Context, profile Profile, value Credential) (m
 				}
 				candidate := resolved
 				candidate.ModelName = name
+				if custom {
+					candidate.Provider = strings.TrimSpace(detail.Provider)
+					candidate.CustomModelID = numeric(detail.CustomConfig.CustomModelID)
+				}
 				put(models, name, candidate)
 			}
 			put(models, info.ConfigName, resolved)
@@ -819,6 +869,13 @@ func detailParamModels(ctx context.Context, profile Profile, value Credential) (
 	result := make([]modelEntry, 0, len(models))
 	for _, config := range models {
 		if config.ConfigName == "" {
+			continue
+		}
+		// 自建模型现在可以被解析和调用（provider + custom_model_id），但账号
+		// 侧的服务商密钥是否有效只有在真实请求时才知道；默认不放进自动
+		// 目录，避免列表里出现必然 4028 的条目。需要时按 config_name 手工
+		// 加入分组即可，网关会带上自建参数。
+		if config.IsCustomModel {
 			continue
 		}
 		if _, exists := seen[config.ConfigName]; exists {
@@ -1409,6 +1466,10 @@ func classifyHTTPError(status int, body []byte) *UpstreamError {
 		result.Credential = false
 	case "4023":
 		result.Model = true
+	case "4028":
+		// 自建模型已被上游路由到服务商，但服务商密钥无效/过期；
+		// 属于账号配置问题，重试与换号都无效。
+		result.Request = true
 	case "1005":
 		// 账号套餐不允许该模型配置（extra 里带 plan）；换号通常无效，
 		// 按模型级错误返回，不惩罚账号。
@@ -1428,7 +1489,9 @@ func httpStatusForCode(code string, fallback int) int {
 		return http.StatusUnauthorized
 	case "4015", "4019", "1005":
 		return http.StatusForbidden
-	case "4001", "3003":
+	case "4028":
+		return http.StatusBadGateway
+	case "4001", "3003", "2001":
 		return http.StatusBadRequest
 	case "4023":
 		return http.StatusBadRequest
