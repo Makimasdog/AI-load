@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -102,12 +103,37 @@ func fetchQuotaSnapshot(ctx context.Context, profile Profile, value Credential) 
 	}
 	result := decodeResult(entBody)
 	packs := entitlementPacks(result)
+	// CN 的 v2 ent_usage 把账号级总量放在 usage_summary 里，权益包只带
+	// entitlement_base_info.charge_amount（面额，不表示剩余）；此前只读
+	// 包上的 quota/usage 字段，导致整行额度恒为 0。
+	totalAmount, consumedAmount, hasSummary := usageSummary(result)
+	slog.Info("trae quota usage summary", "realm", profile.Key,
+		"has_summary", hasSummary, "total_amount", totalAmount,
+		"consumed_amount", consumedAmount, "packs", len(packs))
 	snapshot := observation.Snapshot{
 		Account:      &observation.AccountSummary{DisplayName: value.DisplayLabel(), Email: value.Email},
-		QuotaWindows: make([]observation.QuotaWindow, 0, len(packs)),
+		QuotaWindows: make([]observation.QuotaWindow, 0, len(packs)+1),
 	}
 	totalRemaining := 0.0
+	if hasSummary {
+		remaining := totalAmount - consumedAmount
+		if remaining < 0 {
+			remaining = 0
+		}
+		window := observation.QuotaWindow{
+			ID: "credits:total", Label: "总积分", Scope: "account", Unit: "credits",
+			Limit: floatPtr(totalAmount), Used: floatPtr(consumedAmount),
+			Remaining: floatPtr(remaining), State: quotaState(totalAmount, remaining),
+			IsPrimary: true,
+		}
+		if totalAmount > 0 {
+			window.Utilization = floatPtr(consumedAmount / totalAmount)
+		}
+		snapshot.QuotaWindows = append(snapshot.QuotaWindows, window)
+		totalRemaining += remaining
+	}
 	for index, pack := range packs {
+		faceOnly := false
 		quota := numericFloat(pack["quota"])
 		used := numericFloat(pack["usage"])
 		if quota <= 0 {
@@ -116,9 +142,19 @@ func fetchQuotaSnapshot(ctx context.Context, profile Profile, value Credential) 
 		if used <= 0 {
 			used = numericFloat(pack["used"])
 		}
+		if quota <= 0 {
+			// 新形态：只给面额，没有“该包剩余”，因此不臆造 Remaining。
+			quota = packFaceValue(pack)
+			faceOnly = quota > 0
+		}
 		remaining := quota - used
 		if remaining < 0 {
 			remaining = 0
+		}
+		// 账号级总量已经由 usage_summary 给出时，只保留带真实数量的包；
+		// 只有 display_desc 的空包不再渲染成一排 0。
+		if quota <= 0 && !faceOnly && hasSummary {
+			continue
 		}
 		label := firstNonEmpty(
 			stringValue(pack["display_desc"]), stringValue(pack["pack_name"]),
@@ -128,17 +164,24 @@ func fetchQuotaSnapshot(ctx context.Context, profile Profile, value Credential) 
 		id := firstNonEmpty(stringValue(pack["pack_id"]), stringValue(pack["entitlement_pack_id"]), label)
 		window := observation.QuotaWindow{
 			ID: "pack:" + id, Label: label, Scope: "account", Unit: "credits",
-			Limit: floatPtr(quota), Remaining: floatPtr(remaining), Used: floatPtr(used),
-			State: quotaState(quota, remaining), IsPrimary: index == 0,
+			State: quotaState(quota, remaining), IsPrimary: !hasSummary && index == 0,
 		}
-		if quota > 0 {
-			window.Utilization = floatPtr(used / quota)
+		if !faceOnly {
+			window.Limit = floatPtr(quota)
+			window.Used = floatPtr(used)
+			window.Remaining = floatPtr(remaining)
+			if quota > 0 {
+				window.Utilization = floatPtr(used / quota)
+			}
+			totalRemaining += remaining
+		} else if quota > 0 {
+			// 只有面额：展示包的大小，但不声称剩余。
+			window.Limit = floatPtr(quota)
 		}
 		if reset := packResetAt(pack); reset != nil {
 			window.ResetAtMS = reset
 		}
 		snapshot.QuotaWindows = append(snapshot.QuotaWindows, window)
-		totalRemaining += remaining
 	}
 	sort.SliceStable(snapshot.QuotaWindows, func(i, j int) bool {
 		if snapshot.QuotaWindows[i].IsPrimary != snapshot.QuotaWindows[j].IsPrimary {
@@ -200,7 +243,56 @@ func packResetAt(pack map[string]any) *int64 {
 			}
 		}
 	}
+	// v2 ent_usage 把有效期放在 entitlement_base_info.end_time。
+	if base, ok := pack["entitlement_base_info"].(map[string]any); ok {
+		for _, key := range []string{"end_time", "endTime", "expire_time"} {
+			if raw, ok := base[key]; ok {
+				if ms := normalizeExpiryMillis(raw); ms > 0 {
+					return &ms
+				}
+			}
+		}
+	}
 	return nil
+}
+
+// usageSummary 读取 v2 ent_usage 的账号级总量（CN 的额度只在这里）。
+func usageSummary(result map[string]any) (limit, used float64, ok bool) {
+	if data, isMap := result["data"].(map[string]any); isMap {
+		if _, present := data["usage_summary"]; present {
+			result = data
+		}
+	}
+	summary, isMap := result["usage_summary"].(map[string]any)
+	if !isMap {
+		summary, isMap = result["usageSummary"].(map[string]any)
+	}
+	if !isMap {
+		return 0, 0, false
+	}
+	total := numericFloat(summary["total_amount"])
+	if total <= 0 {
+		total = numericFloat(summary["totalAmount"])
+	}
+	consumed := numericFloat(summary["consumed_amount"])
+	if consumed <= 0 {
+		consumed = numericFloat(summary["consumedAmount"])
+	}
+	if total <= 0 && consumed <= 0 {
+		return 0, 0, false
+	}
+	return total, consumed, true
+}
+
+// packFaceValue 读取权益包面额；它不代表剩余额度，只用于展示包本身的大小。
+func packFaceValue(pack map[string]any) float64 {
+	if value := numericFloat(pack["charge_amount"]); value > 0 {
+		return value
+	}
+	if base, ok := pack["entitlement_base_info"].(map[string]any); ok {
+		return numericFloat(base["charge_amount"])
+	}
+	return 0
 }
 
 func normalizeExpiryMillis(value any) int64 {
