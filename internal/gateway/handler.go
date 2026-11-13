@@ -1897,7 +1897,64 @@ func (handler *Handler) executeAttempts(
 		handler.completeReason(ginContext, recorder, reasonUpstreamRateLimited)
 		return
 	}
+	// 走到这里说明路由存在但候选全被过滤。若同名的另一种大小写在该密钥
+	// 可用的分组里启用，直接告诉调用方该用的模型名，而不是回 503。
+	if value, ok := modelNotEnabledReason(snapshot, recorder.accessKeyID, externalModel); ok {
+		handler.completeReason(ginContext, recorder, value)
+		return
+	}
 	handler.completeReason(ginContext, recorder, reasonNoCandidate)
+}
+
+// modelNotEnabledReason 解释“路由存在但候选被过滤”的两种常见原因：
+// 1) 同名模型在该密钥可用的分组里以另一种大小写启用（指出正确写法）；
+// 2) 模型只存在于密钥未授权的分组里。
+func modelNotEnabledReason(snapshot *state.ConfigSnapshot, accessKeyID uint, model string) (reason, bool) {
+	if snapshot == nil || model == "" {
+		return reason{}, false
+	}
+	accessKey, found := snapshot.AccessKeysByID[accessKeyID]
+	if !found {
+		return reason{}, false
+	}
+	allowed := func(groupID uint) bool {
+		if len(accessKey.Filters.Groups) > 0 {
+			if _, ok := accessKey.Filters.Groups[groupID]; !ok {
+				return false
+			}
+		}
+		_, exists := snapshot.GroupCatalog[groupID]
+		return exists
+	}
+	exactOnlyOutside := false
+	for _, byOperation := range snapshot.ExecutionCandidates {
+		for _, byModel := range byOperation {
+			for candidate, routes := range byModel {
+				if candidate == state.NoModelRouteKey {
+					continue
+				}
+				same := candidate == model
+				if !same && !strings.EqualFold(candidate, model) {
+					continue
+				}
+				for _, route := range routes {
+					if allowed(route.GroupID) {
+						if !same {
+							return reasonModelNotEnabled(candidate), true
+						}
+						return reason{}, false
+					}
+				}
+				if same {
+					exactOnlyOutside = true
+				}
+			}
+		}
+	}
+	if exactOnlyOutside {
+		return reasonModelNotInKeyGroups(model), true
+	}
+	return reason{}, false
 }
 
 func setCooldownRetryAfter(ctx *gin.Context, until, now time.Time) {

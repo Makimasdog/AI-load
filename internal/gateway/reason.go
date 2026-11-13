@@ -29,14 +29,14 @@ func providerErrorReason(result UpstreamResult) reason {
 }
 
 var (
-	reasonInvalidAccessKey              = reason{Status: http.StatusUnauthorized, Code: "invalid_access_key", Message: "Invalid access key."}
-	reasonEndpointNotFound              = reason{Status: http.StatusNotFound, Code: "protocol_endpoint_not_found", Message: "Protocol endpoint not found."}
-	reasonMethodNotAllowed              = reason{Status: http.StatusMethodNotAllowed, Code: "method_not_allowed", Message: "Method not allowed."}
-	reasonInvalidProtocolRequest        = reason{Status: http.StatusBadRequest, Code: "invalid_protocol_request", Message: "Invalid protocol request."}
-	reasonResponseBindingNotFound       = reason{Status: http.StatusBadRequest, Code: "response_binding_not_found", Message: "Previous response ownership could not be located."}
-	reasonModelRequiredByFilter         = reason{Status: http.StatusBadRequest, Code: "model_required_by_filter", Message: "A model is required by the access key filter."}
-	reasonAdvisorModelUnavailable       = reason{Status: http.StatusBadRequest, Code: "advisor_model_unavailable", Message: "The advisor model must be provided by the selected group and allowed by the access key."}
-	reasonNoCandidate                   = reason{Status: http.StatusServiceUnavailable, Code: "no_available_candidate", Message: "No available upstream candidate."}
+	reasonInvalidAccessKey        = reason{Status: http.StatusUnauthorized, Code: "invalid_access_key", Message: "Invalid access key."}
+	reasonEndpointNotFound        = reason{Status: http.StatusNotFound, Code: "protocol_endpoint_not_found", Message: "Protocol endpoint not found."}
+	reasonMethodNotAllowed        = reason{Status: http.StatusMethodNotAllowed, Code: "method_not_allowed", Message: "Method not allowed."}
+	reasonInvalidProtocolRequest  = reason{Status: http.StatusBadRequest, Code: "invalid_protocol_request", Message: "Invalid protocol request."}
+	reasonResponseBindingNotFound = reason{Status: http.StatusBadRequest, Code: "response_binding_not_found", Message: "Previous response ownership could not be located."}
+	reasonModelRequiredByFilter   = reason{Status: http.StatusBadRequest, Code: "model_required_by_filter", Message: "A model is required by the access key filter."}
+	reasonAdvisorModelUnavailable = reason{Status: http.StatusBadRequest, Code: "advisor_model_unavailable", Message: "The advisor model must be provided by the selected group and allowed by the access key."}
+	reasonNoCandidate             = reason{Status: http.StatusServiceUnavailable, Code: "no_available_candidate", Message: "No available upstream candidate."}
 	// reasonModelRouteNotFound covers requests rejected before any candidate or
 	// credential is considered: the selected protocol has no route for this
 	// model at all. Retrying cannot help, so it must not look like a transient
@@ -46,6 +46,31 @@ var (
 		Code:   "model_route_not_found",
 		Message: "No group provides this model for the requested protocol. " +
 			"Check the model name and the client protocol (OpenAI-compatible or Anthropic).",
+	}
+	// reasonModelNotEnabled covers a model that only exists in groups this access
+	// key cannot use. Naming the enabled spelling avoids the misleading
+	// "no candidate" 503 when the same model is enabled with different casing.
+	reasonModelNotEnabled = func(model string) reason {
+		return reason{
+			Status: http.StatusBadRequest,
+			Code:   "model_not_enabled",
+			Message: fmt.Sprintf(
+				"This model is not enabled in the groups allowed for this access key; use %q instead.",
+				model,
+			),
+		}
+	}
+	// reasonModelNotInKeyGroups covers a model that exists, but only in groups the
+	// access key filter excludes; retrying or switching credentials cannot help.
+	reasonModelNotInKeyGroups = func(model string) reason {
+		return reason{
+			Status: http.StatusBadRequest,
+			Code:   "model_not_in_access_key_groups",
+			Message: fmt.Sprintf(
+				"Model %q is provided only by groups this access key cannot use; add one of those groups to the key or use another key.",
+				model,
+			),
+		}
 	}
 	reasonUpstreamRateLimited           = reason{Status: http.StatusTooManyRequests, Code: "upstream_rate_limited", Message: "Upstream rate limit exceeded."}
 	reasonUpstreamConnect               = reason{Status: http.StatusBadGateway, Code: "upstream_connect_failed", Message: "Could not connect to an upstream service."}
