@@ -89,6 +89,13 @@ func fetchModelCatalog(ctx context.Context, profile Profile, value Credential, b
 		return nil, &UpstreamHTTPError{Operation: "model_list", StatusCode: http.StatusForbidden}
 	}
 	base := firstNonEmpty(baseURL, value.EffectiveBaseURL(profile))
+	// CN 的 llm_raw_chat 只认 batch_get_detail_param 里的配置名，model_list
+	// 的条目（如 seed_m8）发过去会被判 4001，因此优先用真实目录。
+	if profile.Key == realmCN {
+		if entries, err := detailParamModels(ctx, profile, value); err == nil && len(entries) > 0 {
+			return entries, nil
+		}
+	}
 	body, status, err := coreJSON(ctx, profile, value, base+profile.ModelListPath, map[string]any{"type": "chat"})
 	if err != nil {
 		return nil, err

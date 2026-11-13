@@ -324,13 +324,20 @@ func payStatus(ctx context.Context, profile Profile, value Credential, payHost s
 		return "", false
 	}
 	result := decodeResult(body)
+	// 两边都没有 plan_name/product_type；真实档位是 user_pay_identity(_str)。
 	name := firstNonEmpty(
+		strings.TrimSpace(stringValue(result["user_pay_identity_str"])),
 		stringValue(result["plan_name"]), stringValue(result["product_type"]),
 		stringValue(result["payment_type"]), stringValue(result["plan"]),
 	)
-	paid := truthy(result["is_paid_user"]) || truthy(result["is_paid"]) || truthy(result["is_subscribed"])
+	identity := numericFloat(result["user_pay_identity"])
+	paid := identity > 0 || truthy(result["is_paid_user"]) || truthy(result["is_paid"]) ||
+		truthy(result["is_subscribed"])
 	if !paid && name != "" && !strings.EqualFold(name, "free") {
 		paid = true
+	}
+	if !paid && name == "" {
+		name = "Free"
 	}
 	return name, paid
 }

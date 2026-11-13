@@ -115,8 +115,11 @@ var (
 		PayStatusPath:      "/trae/api/v1/pay/ide_user_pay_status",
 		ModelListSupported: false,
 		AuthPrefix:         "Bearer",
-		UserAgent:          "TraeClient/TTNet",
-		AppVersion:         "3.6.2", VersionCode: "20260924",
+		// 实测：INTL 用 "TraeClient/TTNet" 作 UA 时上游会按另一套模型
+		// 注册表处理并返回 4023（model unknown）；改用客户端品牌 UA
+		// 才能拿到真实业务码（如 4015 权限/区域限制）。
+		UserAgent:  "Trae/3.6.2",
+		AppVersion: "3.6.2", VersionCode: "20260924",
 		Region: "US", StoreCountry: "us",
 	}
 )

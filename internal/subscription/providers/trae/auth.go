@@ -34,8 +34,8 @@ const (
 
 // 凭证缺失时的明确错误：避免被当成网络故障或上游拒绝。
 var (
-	ErrMissingAccessToken  = errors.New("该 Trae 凭证缺少 access_token，请重新导入或先执行刷新")
-	ErrMissingRefreshToken = errors.New("该 Trae 凭证缺少 refresh_token，无法刷新；请重新导入")
+	ErrMissingAccessToken   = errors.New("该 Trae 凭证缺少 access_token，请重新导入或先执行刷新")
+	ErrMissingRefreshToken  = errors.New("该 Trae 凭证缺少 refresh_token，无法刷新；请重新导入")
 	ErrIntlMissingDeviceKey = errors.New("Trae 国际版刷新需要设备私钥（iCubeAuthInfo://icube-dc:* 中的 privateKeyPEM），当前凭证未提供")
 	ErrEncryptedStorage     = errors.New("该 storage.json 里的登录态是 tc 密文封装，无法直接解析；请用社区工具导出明文 JSON 后再导入")
 )
@@ -153,6 +153,10 @@ func RefreshCredentialOnce(ctx context.Context, profile Profile, current Credent
 		}
 		refreshed := current
 		refreshed.AccessToken = token
+		if uid := uidFromToken(token); uid != "" &&
+			(refreshed.UID == "" || strings.HasPrefix(refreshed.UID, "rt-")) {
+			refreshed.UID = uid
+		}
 		if value := firstNonEmpty(stringValue(result["RefreshToken"]), stringValue(result["refreshToken"])); value != "" {
 			refreshed.RefreshToken = value
 		}
@@ -377,8 +381,8 @@ func decodeResult(body []byte) map[string]any {
 
 func codeOf(body []byte) string {
 	var envelope struct {
-		Code    json.RawMessage `json:"code"`
-		Message string          `json:"message"`
+		Code             json.RawMessage `json:"code"`
+		Message          string          `json:"message"`
 		ResponseMetadata struct {
 			Error struct {
 				Code    json.RawMessage `json:"Code"`
@@ -397,8 +401,9 @@ func codeOf(body []byte) string {
 
 func messageOf(body []byte) string {
 	var envelope struct {
-		Message string `json:"message"`
-		Msg     string `json:"msg"`
+		Message          string          `json:"message"`
+		Msg              string          `json:"msg"`
+		Extra            json.RawMessage `json:"extra"`
 		ResponseMetadata struct {
 			Error struct {
 				Message string `json:"Message"`
@@ -408,7 +413,14 @@ func messageOf(body []byte) string {
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return ""
 	}
-	return firstNonEmpty(envelope.Message, envelope.Msg, envelope.ResponseMetadata.Error.Message)
+	// 部分业务码（如 1005）只把原因放在 extra 里，message 为空；保留原文，
+	// 避免对外只剩一个无法解释的错误码。
+	return firstNonEmpty(
+		envelope.Message,
+		envelope.Msg,
+		envelope.ResponseMetadata.Error.Message,
+		codeText(envelope.Extra),
+	)
 }
 
 func codeText(raw json.RawMessage) string {

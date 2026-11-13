@@ -263,6 +263,10 @@ func CompleteBrowserAuthorization(
 		if raw := result["TokenExpireAt"]; raw != nil {
 			credential.ExpiresAt = normalizeExpiry(numeric(raw))
 		}
+		if uid := uidFromToken(token); uid != "" &&
+			(credential.UID == "" || strings.HasPrefix(credential.UID, "rt-")) {
+			credential.UID = uid
+		}
 		if credential.UID == "" && credential.RefreshToken != "" {
 			credential.UID = "rt-" + shortHash(credential.RefreshToken)
 		}

@@ -10,10 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -23,6 +26,16 @@ import (
 const (
 	maxChatResponseBytes = 1 << 20
 	traceHeader          = "X-Request-Id"
+	// rawChatFunction 是 IDE 通道默认协议函数，必须同时出现在请求体
+	// 与 X-App-Function / X-Ide-Function 头里。
+	rawChatFunction = "chat_v3"
+
+	// CN llm_raw_chat 的准入头组（与 TraeCode 参考实现一致）。
+	chatAppIDCN         = appID
+	chatAppVersionCN    = "default"
+	chatIdeVersionCN    = "3.4.4"
+	chatVersionCodeCN   = "20260212"
+	chatPluginChannelCN = "desktop"
 )
 
 // ExecuteRequest 与 provider 无关的执行请求契约（与 WorkBuddy 对齐）。
@@ -276,7 +289,7 @@ func (executor *upstreamExecutor) open(ctx context.Context, credential Credentia
 		}
 	}
 	base := trimBaseURL(firstNonEmpty(request.BaseURL, credential.BaseURL, profile.CoreURL))
-	payload, err := normalizeRequestBody(request.Payload, request.Model, credential, profile)
+	payload, err := normalizeRequestBody(ctx, request.Payload, request.Model, credential, profile)
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +363,7 @@ func clientForRequest(ctx context.Context, request ExecuteRequest) (*http.Client
 // 请求体
 // ---------------------------------------------------------------------------
 
-func normalizeRequestBody(raw []byte, model string, credential Credential, profile Profile) ([]byte, error) {
+func normalizeRequestBody(ctx context.Context, raw []byte, model string, credential Credential, profile Profile) ([]byte, error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil, errors.New("Trae request body is empty")
 	}
@@ -365,7 +378,16 @@ func normalizeRequestBody(raw []byte, model string, credential Credential, profi
 	if modelName == "" {
 		return nil, errors.New("Trae request is missing a model")
 	}
-	body["model_name"] = modelName
+	// llm_raw_chat 要求 config_name 来自 batch_get_detail_param，model_name 是
+	// 该配置下的真实模型 id（如 DeepSeek-V4-Flash__dev）；直接用展示名会被
+	// 上游以 4001（param invalid）拒绝。
+	resolved := resolveChatModel(ctx, profile, credential, modelName)
+	slog.Info("trae model resolved", "v", resolved.ConfigName+"|"+resolved.ModelName)
+	modelName = resolved.ModelName
+	body["config_name"] = resolved.ConfigName
+	body["model_name"] = resolved.ModelName
+	body["config_source"] = resolved.ConfigSource
+	body["raw_chat_function"] = rawChatFunction
 	messages, err := normalizeMessages(input["messages"])
 	if err != nil {
 		return nil, err
@@ -384,13 +406,22 @@ func normalizeRequestBody(raw []byte, model string, credential Credential, profi
 		}
 	}
 	if tools, ok := input["tools"]; ok && tools != nil {
-		body["tools"] = tools
-		if choice, ok := input["tool_choice"]; ok && choice != nil {
-			body["tool_choice"] = choice
+		if normalized := normalizeTools(tools); len(normalized) > 0 {
+			body["tools"] = normalized
+			if choice := normalizeToolChoice(input["tool_choice"]); choice != nil {
+				body["tool_choice"] = choice
+			}
+			if parallel, ok := input["parallel_tool_calls"].(bool); ok {
+				body["parallel_tool_calls"] = parallel
+			}
 		}
 	}
-	if session := strings.TrimSpace(credential.UID); session != "" {
-		body["session_id"] = "trae2api-" + shortHash(session+"|"+modelName)
+	if session := credential.EffectiveUID(); session != "" {
+		// conversation_id/session_id 是 UUID 类型参数，非 UUID 串会被上游
+		// 判为 4001 param invalid；按账号+模型+函数做稳定映射。
+		sessionID := stableSessionUUID(session + "\x1f" + modelName + "\x1f" + rawChatFunction)
+		body["session_id"] = sessionID
+		body["conversation_id"] = sessionID
 	}
 	return json.Marshal(body)
 }
@@ -398,6 +429,81 @@ func normalizeRequestBody(raw []byte, model string, credential Credential, profi
 type messagePart struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+}
+
+// normalizeTools 把 OpenAI tools 归一成 llm_raw_chat 接受的形态：function
+// 的 parameters 必须是 JSON 字符串，传对象会被上游以 400 空响应拒绝
+// （参考 Magpie 的 nativeTools 实现）。
+func normalizeTools(raw any) []any {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]any, 0, len(items))
+	for _, item := range items {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		function, ok := tool["function"].(map[string]any)
+		if !ok {
+			// 兼容 {name, description, parameters} 的扁平写法。
+			function = tool
+		}
+		name := strings.TrimSpace(stringValue(function["name"]))
+		if name == "" {
+			continue
+		}
+		entry := map[string]any{"type": "function"}
+		normalized := map[string]any{"name": name, "description": stringValue(function["description"])}
+		parameters := function["parameters"]
+		if parameters == nil {
+			parameters = function["input_schema"]
+		}
+		if _, isString := parameters.(string); !isString {
+			if parameters == nil {
+				parameters = map[string]any{}
+			}
+			encoded, err := json.Marshal(parameters)
+			if err != nil {
+				continue
+			}
+			parameters = string(encoded)
+		}
+		normalized["parameters"] = parameters
+		if strict, ok := function["strict"].(bool); ok {
+			normalized["strict"] = strict
+		}
+		entry["function"] = normalized
+		result = append(result, entry)
+	}
+	return result
+}
+
+// normalizeToolChoice 把对象形态的 tool_choice 降级成上游接受的字符串。
+func normalizeToolChoice(raw any) any {
+	switch value := raw.(type) {
+	case string:
+		trimmed := strings.ToLower(strings.TrimSpace(value))
+		if trimmed == "" {
+			return nil
+		}
+		return trimmed
+	case map[string]any:
+		kind := strings.ToLower(strings.TrimSpace(stringValue(value["type"])))
+		if kind == "function" {
+			if function, ok := value["function"].(map[string]any); ok {
+				if name := strings.TrimSpace(stringValue(function["name"])); name != "" {
+					return name
+				}
+			}
+			return "auto"
+		}
+		if kind != "" {
+			return kind
+		}
+	}
+	return nil
 }
 
 // normalizeMessages 把 OpenAI messages 归一为 Trae 的 parts 数组形态。
@@ -423,13 +529,36 @@ func normalizeMessages(raw any) ([]any, error) {
 		parts := contentParts(message["content"])
 		entry := map[string]any{"role": role, "content": parts}
 		if role == "assistant" {
-			if calls, ok := message["tool_calls"]; ok && calls != nil {
-				entry["tool_calls"] = calls
+			// 上游历史里的调用是 function_call 形态，OpenAI 客户端回放的是
+			// function 形态，不转换会让模型看不到自己之前的调用。
+			if calls, ok := message["tool_calls"].([]any); ok && len(calls) > 0 {
+				converted := make([]any, 0, len(calls))
+				for _, call := range calls {
+					item, ok := call.(map[string]any)
+					if !ok {
+						continue
+					}
+					function, _ := item["function"].(map[string]any)
+					converted = append(converted, map[string]any{
+						"id":   stringValue(item["id"]),
+						"type": firstNonEmpty(stringValue(item["type"]), "function"),
+						"function_call": map[string]any{
+							"name":      stringValue(function["name"]),
+							"arguments": firstNonEmpty(rawStringValue(function["arguments"]), "{}"),
+						},
+					})
+				}
+				if len(converted) > 0 {
+					entry["tool_calls"] = converted
+				}
 			}
 		}
 		if role == "tool" {
 			if id := stringValue(message["tool_call_id"]); id != "" {
 				entry["tool_call_id"] = id
+			}
+			if name := stringValue(message["name"]); name != "" {
+				entry["name"] = name
 			}
 		}
 		result = append(result, entry)
@@ -474,11 +603,243 @@ func contentParts(raw any) []messagePart {
 // 请求头
 // ---------------------------------------------------------------------------
 
+// stableSessionUUID 把任意会话材料映射成稳定的 UUID 字符串。
+func stableSessionUUID(material string) string {
+	sum := sha256.Sum256([]byte(material))
+	hexValue := fmt.Sprintf("%x", sum[:16])
+	return hexValue[0:8] + "-" + hexValue[8:12] + "-" + hexValue[12:16] + "-" +
+		hexValue[16:20] + "-" + hexValue[20:32]
+}
+
+// chatModelConfig 是一条可用的模型配置：config_name + 真实 model_name + 来源。
+type chatModelConfig struct {
+	ConfigName   string
+	ModelName    string
+	ConfigSource int
+}
+
+type cachedChatCatalog struct {
+	fetchedAt time.Time
+	models    map[string]chatModelConfig
+}
+
+const (
+	chatCatalogPath = "/api/ide/v1/batch_get_detail_param"
+	chatCatalogTTL  = 10 * time.Minute
+)
+
+var (
+	chatCatalogCache sync.Map // 账号 -> cachedChatCatalog
+	chatCatalogFuncs = []string{
+		"ui_builder_v2", "solo_coder", "chat_v3", "solo_builder", "builder_v3", "builder",
+		"chat", "inline_chat", "git_ai", "custom_agent_generation", "utils", "code_reviewer",
+		"code_review_summary", "solo_agent", "solo_agent_remote", "solo_work_remote",
+		"solo_agent_lite", "solo_work_lite", "solo_design_lite", "solo_design_remote",
+		"multimodal", "system_diagnosis",
+	}
+)
+
+// chatCatalogRequest 是 batch_get_detail_param 的入参（客户端同款）。
+func chatCatalogRequest() map[string]any {
+	return map[string]any{
+		"functions": chatCatalogFuncs, "agent_type": "",
+		"current_config_info": map[string]any{"config_name": "", "is_custom_model": false},
+		"mode_type":           0, "access_type": 0, "ab_force_vids": "",
+		"ab_autotest_advanced_mode": 0, "show_custom_model": true,
+	}
+}
+
+// resolveChatModel 把客户端传入的模型名解析成上游要求的配置三元组。
+// 命中不了目录时退回原值，保持与旧行为一致。
+func resolveChatModel(ctx context.Context, profile Profile, value Credential, model string) chatModelConfig {
+	trimmed := strings.TrimSpace(model)
+	fallback := chatModelConfig{ConfigName: trimmed, ModelName: trimmed, ConfigSource: 1}
+	key := strings.ToLower(trimmed)
+	if key == "" {
+		return fallback
+	}
+	if strings.TrimSpace(value.AccessToken) == "" {
+		return fallback
+	}
+	cacheKey := firstNonEmpty(strings.TrimSpace(value.UID), strings.TrimSpace(value.DeviceID))
+	if entry, ok := chatCatalogCache.Load(cacheKey); ok {
+		cached := entry.(cachedChatCatalog)
+		if time.Since(cached.fetchedAt) < chatCatalogTTL {
+			if resolved, hit := cached.models[key]; hit {
+				return resolved
+			}
+			return fallback
+		}
+	}
+	models, err := fetchChatCatalog(ctx, profile, value)
+	if err != nil {
+		slog.Warn("trae model catalog unavailable", "realm", profile.Key, "error", err)
+		return fallback
+	}
+	chatCatalogCache.Store(cacheKey, cachedChatCatalog{fetchedAt: time.Now(), models: models})
+	if resolved, hit := models[key]; hit {
+		return resolved
+	}
+	slog.Warn("trae model missing from catalog", "model", key, "size", len(models))
+	return fallback
+}
+
+// fetchChatCatalog 拉取账号可用的模型目录，建立 展示名/配置名/真实模型名 的索引。
+func fetchChatCatalog(ctx context.Context, profile Profile, value Credential) (map[string]chatModelConfig, error) {
+	client, err := subscriptionruntime.HTTPClient(ctx)
+	if err != nil || client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	base := strings.TrimRight(strings.TrimSpace(profile.CoreURL), "/")
+	if base == "" {
+		return nil, errors.New("Trae 渠道缺少核心服务地址")
+	}
+	requestBody, err := json.Marshal(chatCatalogRequest())
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+chatCatalogPath, bytes.NewReader(requestBody))
+	if err != nil {
+		return nil, err
+	}
+	for name, values := range chatHeaders(profile, value, "") {
+		request.Header[name] = values
+	}
+	request.Header.Set("Accept", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("model catalog rejected (status=%d code=%s)", response.StatusCode, codeOf(payload))
+	}
+	var parsed struct {
+		FunctionConfigs []struct {
+			Function       string `json:"function"`
+			ConfigInfoList []struct {
+				ConfigName    string `json:"config_name"`
+				ConfigSource  int    `json:"config_source"`
+				DisplayConfig struct {
+					DisplayName string `json:"display_name"`
+				} `json:"display_config"`
+				ModelDetailList []struct {
+					ModelName string `json:"model_name"`
+				} `json:"model_detail_list"`
+			} `json:"config_info_list"`
+		} `json:"function_configs"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		return nil, err
+	}
+	models := make(map[string]chatModelConfig)
+	aliases := make(map[string]chatModelConfig)
+	// 精确键（config_name / model_name）与展示名分表存放：官方目录里存在
+	// DeepSeek-V4-Flash 与 DeepSeek-V4-Flash-Official 共用同一个展示名，
+	// 若混在一张表里，后写入的展示名别名会把精确键覆盖成另一个配置，
+	// 请求就会打到当前套餐不可用的配置上（上游返回 code=1005）。
+	put := func(target map[string]chatModelConfig, key string, candidate chatModelConfig) {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "" {
+			return
+		}
+		// 官方配置优先：同名时账号自建模型（source=3）不能覆盖 source=1。
+		if existing, ok := target[key]; ok &&
+			existing.ConfigSource == 1 && candidate.ConfigSource != 1 {
+			return
+		}
+		target[key] = candidate
+	}
+	for _, function := range parsed.FunctionConfigs {
+		// 只取 chat 通道的配置：其它 function 会有同名但不同 model_name 的条目，
+		// 混进来会把 llm_raw_chat 需要的配置覆盖掉。
+		if function.Function != rawChatFunction {
+			continue
+		}
+		for _, info := range function.ConfigInfoList {
+			if info.ConfigName == "" {
+				continue
+			}
+			resolved := chatModelConfig{
+				ConfigName:   info.ConfigName,
+				ModelName:    info.ConfigName,
+				ConfigSource: info.ConfigSource,
+			}
+			for _, detail := range info.ModelDetailList {
+				name := strings.TrimSpace(detail.ModelName)
+				if name == "" {
+					continue
+				}
+				// 配置名必须映射到真实 model_name（如 xxx__dev），
+				// 直接发配置名会被上游判为 4023（model unknown）。
+				if resolved.ModelName == info.ConfigName {
+					resolved.ModelName = name
+				}
+				candidate := resolved
+				candidate.ModelName = name
+				put(models, name, candidate)
+			}
+			put(models, info.ConfigName, resolved)
+			if info.DisplayConfig.DisplayName != "" {
+				put(aliases, info.DisplayConfig.DisplayName, resolved)
+			}
+		}
+	}
+	for key, value := range aliases {
+		if _, exists := models[key]; !exists {
+			models[key] = value
+		}
+	}
+	slog.Info("trae chat catalog loaded", "realm", profile.Key, "models", len(models))
+	return models, nil
+}
+
+// detailParamModels 把目录去重成对外模型列表（以 config_name 作为 id）。
+func detailParamModels(ctx context.Context, profile Profile, value Credential) ([]modelEntry, error) {
+	models, err := fetchChatCatalog(ctx, profile, value)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(models))
+	result := make([]modelEntry, 0, len(models))
+	for _, config := range models {
+		if config.ConfigName == "" {
+			continue
+		}
+		if _, exists := seen[config.ConfigName]; exists {
+			continue
+		}
+		seen[config.ConfigName] = struct{}{}
+		result = append(result, modelEntry{ID: config.ConfigName, Name: config.ConfigName})
+	}
+	sort.Slice(result, func(left, right int) bool { return result[left].ID < result[right].ID })
+	return result, nil
+}
+
 func chatHeaders(profile Profile, value Credential, requestID string) http.Header {
 	headers := accountHeaders(profile, value)
 	headers.Set("Accept", "text/event-stream")
 	headers.Set("x-plugin-channel", pluginChannel)
 	headers.Set("X-App-Id", appID)
+	headers.Set("X-App-Function", rawChatFunction)
+	headers.Set("X-Ide-Function", rawChatFunction)
+	headers.Set("X-App-Version", firstNonEmpty(value.AppVersion, profile.AppVersion))
+	headers.Set("X-App-Version-Code", firstNonEmpty(value.VersionCode, profile.VersionCode))
+	if profile.Key == realmCN {
+		// CN 的 llm_raw_chat 把版本头当作模型准入条件，版本过低会直接 4001；
+		// 这里对齐 TraeCode 通道的固定组合（X-App-Version 必须是 default）。
+		headers.Set("X-App-Id", chatAppIDCN)
+		headers.Set("X-App-Version", chatAppVersionCN)
+		headers.Set("X-App-Version-Code", chatVersionCodeCN)
+		headers.Set("X-Ide-Version", chatIdeVersionCN)
+		headers.Set("X-Ide-Version-Code", chatVersionCodeCN)
+		headers.Set("X-Ide-Version-Type", "stable")
+		headers.Set("X-Plugin-Channel", chatPluginChannelCN)
+	}
 	if requestID != "" {
 		headers.Set(traceHeader, requestID)
 	}
@@ -493,7 +854,12 @@ func accountHeaders(profile Profile, value Credential) http.Header {
 	headers.Set("Content-Type", "application/json")
 	headers.Set("User-Agent", profile.UserAgent)
 	headers.Set("X-App-Id", appID)
-	headers.Set("x-uid", strings.TrimSpace(value.UID))
+	if uid := value.EffectiveUID(); uid != "" && !strings.HasPrefix(uid, "rt-") {
+		// rt- 开头是身份补全失败时的占位值，上游会把它当非法参数。
+		// 上游按原始大小写读取该头；Header.Set 会规范成 X-Uid，
+		// 因此直接写 map 保持小写。
+		headers["x-uid"] = []string{uid}
+	}
 	headers.Set("X-Ide-Version", firstNonEmpty(value.AppVersion, profile.AppVersion))
 	headers.Set("x-ide-version-code", firstNonEmpty(value.VersionCode, profile.VersionCode))
 	headers.Set("X-Ide-Version-Type", "stable")
@@ -578,9 +944,49 @@ func parseOutput(payload []byte) (outputDelta, error) {
 		delta.content = rawStringValue(event["content"])
 	}
 	if calls, ok := event["tool_calls"].([]any); ok && len(calls) > 0 {
-		delta.toolCalls = calls
+		delta.toolCalls = normalizeUpstreamToolCalls(calls)
 	}
 	return delta, nil
+}
+
+// normalizeUpstreamToolCalls 把上游的 function_call 形态翻译成 OpenAI 的
+// function 形态。上游下发的是：
+// {"index":0,"id":"call_x","type":"function",
+//
+//	"function_call":{"name":"get_time","arguments":"{\"city\":\"Tokyo\"}"}}
+func normalizeUpstreamToolCalls(calls []any) []any {
+	result := make([]any, 0, len(calls))
+	for index, item := range calls {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		position := index
+		if value := numeric(entry["index"]); value != 0 {
+			position = int(value)
+		}
+		normalized := map[string]any{
+			"index": position,
+			"type":  firstNonEmpty(stringValue(entry["type"]), "function"),
+		}
+		if id := stringValue(entry["id"]); id != "" {
+			normalized["id"] = id
+		}
+		function := map[string]any{"name": "", "arguments": ""}
+		if call, ok := entry["function_call"].(map[string]any); ok {
+			function["name"] = stringValue(call["name"])
+			function["arguments"] = firstNonEmpty(
+				rawStringValue(call["arguments"]),
+				rawStringValue(call["partial_arguments"]),
+			)
+		} else if call, ok := entry["function"].(map[string]any); ok {
+			function["name"] = stringValue(call["name"])
+			function["arguments"] = rawStringValue(call["arguments"])
+		}
+		normalized["function"] = function
+		result = append(result, normalized)
+	}
+	return result
 }
 
 func emitDelta(send func(StreamChunk) bool, state *streamState, delta outputDelta) error {
@@ -972,6 +1378,10 @@ func classifyHTTPError(status int, body []byte) *UpstreamError {
 		status = httpStatusForCode(code, status)
 	}
 	result := &UpstreamError{Status: status, Code: code, Message: truncate(messageOf(body), 512)}
+	// 上游 4xx 的原始 message 是唯一能区分“消息格式 / 模型名”的证据来源。
+	slog.Warn("trae upstream rejected chat request",
+		"status", status, "code", code, "message", result.Message,
+		"body", truncate(string(body), 512))
 	switch code {
 	case "1001", "20101":
 		result.Credential = true
@@ -988,6 +1398,10 @@ func classifyHTTPError(status int, body []byte) *UpstreamError {
 		result.Credential = false
 	case "4023":
 		result.Model = true
+	case "1005":
+		// 账号套餐不允许该模型配置（extra 里带 plan）；换号通常无效，
+		// 按模型级错误返回，不惩罚账号。
+		result.Model = true
 	case "20403", "20405":
 		result.Credential = true
 	}
@@ -1001,7 +1415,7 @@ func httpStatusForCode(code string, fallback int) int {
 	switch normalizeErrorCode(code) {
 	case "1001", "20101", "20403", "20405":
 		return http.StatusUnauthorized
-	case "4015", "4019":
+	case "4015", "4019", "1005":
 		return http.StatusForbidden
 	case "4001", "3003":
 		return http.StatusBadRequest

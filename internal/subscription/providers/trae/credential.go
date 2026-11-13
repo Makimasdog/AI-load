@@ -3,6 +3,7 @@ package trae
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -62,7 +63,7 @@ func (value Credential) DisplayLabel() string {
 			return trimmed
 		}
 	}
-	if uid := strings.TrimSpace(value.UID); uid != "" {
+	if uid := value.EffectiveUID(); uid != "" {
 		if len(uid) > 8 {
 			return "Trae " + uid[:8]
 		}
@@ -159,6 +160,41 @@ func ParseCredentialJSON(raw []byte, profile Profile) (Credential, error) {
 	return credential, nil
 }
 
+// EffectiveUID 返回可用于请求头的真实用户 id：凭据里的 UID 为空或仍是
+// rt- 占位值时，从 access_token 的 JWT data.id 推导。占位值直接发给上游
+// 会被判为非法参数或导致账号身份绑定失败。
+func (value Credential) EffectiveUID() string {
+	uid := strings.TrimSpace(value.UID)
+	if uid != "" && !strings.HasPrefix(uid, "rt-") {
+		return uid
+	}
+	if derived := uidFromToken(value.AccessToken); derived != "" {
+		return derived
+	}
+	return uid
+}
+
+// uidFromToken 从 Trae 的 JWT 载荷里取 data.id（真实用户 id）。
+func uidFromToken(token string) string {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Data struct {
+			ID json.Number `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(claims.Data.ID.String())
+}
+
 // Marshal 返回写回加密存储的规范化 JSON。
 func (value Credential) Marshal() ([]byte, error) { return json.Marshal(value) }
 
@@ -214,7 +250,9 @@ func newRuntimeCredential(value Credential) (subscriptionruntime.Credential, err
 	}
 	expiresAt, known := value.ExpiresAtTime()
 	account := subscriptionruntime.Account{Email: value.DisplayLabel(), ExpiresAt: expiresAt, ExpiresAtKnown: known}
-	return subscriptionruntime.NewCredential(canonical, value.UID, account, expiresAt, known, value.SecretValues()), nil
+	// 运行时身份用 JWT 里的真实 id；canonical 原样保留，避免指纹变化。
+	identity := firstNonEmpty(value.EffectiveUID(), value.UID)
+	return subscriptionruntime.NewCredential(canonical, identity, account, expiresAt, known, value.SecretValues()), nil
 }
 
 // normalizeRealm 按显式值或主机名判定区域。

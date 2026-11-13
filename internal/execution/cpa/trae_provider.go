@@ -244,6 +244,11 @@ func traeErrorSummary(status int, code, upstreamMessage string) string {
 		return "账号触发上游风控，已暂停该账号，请稍后重试"
 	case "4023":
 		return "上游不支持或已下线该模型"
+	case "1005":
+		if upstreamMessage != "" {
+			return "上游 code=1005（extra=" + upstreamMessage + "）：当前账号套餐不支持该模型配置"
+		}
+		return "上游 code=1005：当前账号套餐不支持该模型配置"
 	case "20403", "20405":
 		return "设备指纹校验失败，请重新导入包含设备信息的凭证"
 	case "missing_access_token":

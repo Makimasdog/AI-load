@@ -18,6 +18,56 @@ import (
 	"testing"
 )
 
+func TestEffectiveUIDDerivesFromJWTWhenPlaceholder(t *testing.T) {
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"data":{"id":"7541337807685567505"}}`))
+	token := "header." + payload + ".signature"
+	credential := Credential{UID: "rt-f65ce", AccessToken: token}
+	if got := credential.EffectiveUID(); got != "7541337807685567505" {
+		t.Fatalf("EffectiveUID = %q, want JWT data.id", got)
+	}
+	if got := (Credential{UID: "123", AccessToken: token}).EffectiveUID(); got != "123" {
+		t.Fatalf("EffectiveUID = %q, want stored uid", got)
+	}
+}
+
+func TestNormalizeToolsEncodesParametersAsString(t *testing.T) {
+	normalized := normalizeTools([]any{map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":        "get_time",
+			"description": "Return current time for a city",
+			"parameters":  map[string]any{"type": "object"},
+		},
+	}})
+	if len(normalized) != 1 {
+		t.Fatalf("normalized tools = %d", len(normalized))
+	}
+	function := normalized[0].(map[string]any)["function"].(map[string]any)
+	parameters, ok := function["parameters"].(string)
+	if !ok || !json.Valid([]byte(parameters)) {
+		t.Fatalf("parameters must be a JSON string, got %#v", function["parameters"])
+	}
+}
+
+func TestNormalizeUpstreamToolCallsConvertsFunctionCall(t *testing.T) {
+	calls := normalizeUpstreamToolCalls([]any{map[string]any{
+		"index": float64(0),
+		"id":    "call_1",
+		"type":  "function",
+		"function_call": map[string]any{
+			"name":      "get_time",
+			"arguments": `{"city":"Tokyo"}`,
+		},
+	}})
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d", len(calls))
+	}
+	function := calls[0].(map[string]any)["function"].(map[string]any)
+	if function["name"] != "get_time" || function["arguments"] != `{"city":"Tokyo"}` {
+		t.Fatalf("function = %#v", function)
+	}
+}
+
 func TestParseCredentialJSONAcceptsCommunityShape(t *testing.T) {
 	raw := []byte(`{
 		"token":"access-1",
@@ -77,7 +127,7 @@ func TestNormalizeRequestBodyProducesPartsArray(t *testing.T) {
 		"seed":42,
 		"max_completion_tokens":128
 	}`)
-	body, err := normalizeRequestBody(input, "glm-5.2", Credential{UID: "u1"}, CNProfile)
+	body, err := normalizeRequestBody(context.Background(), input, "glm-5.2", Credential{UID: "u1"}, CNProfile)
 	if err != nil {
 		t.Fatalf("normalizeRequestBody: %v", err)
 	}
@@ -361,9 +411,9 @@ func TestParseStorageJSONPlaintextImport(t *testing.T) {
 	})
 	device, _ := json.Marshal(map[string]any{"privateKeyPEM": keyPEM, "publicKeyPEM": "pub"})
 	store := map[string]any{
-		"iCubeAuthInfo://icube.cloudide":  string(auth),
+		"iCubeAuthInfo://icube.cloudide":     string(auth),
 		"iCubeAuthInfo://icube-dc:987654321": string(device),
-		"telemetry.machineId":             "machine-from-store",
+		"telemetry.machineId":                "machine-from-store",
 	}
 	raw, _ := json.Marshal(store)
 	credential, err := ParseCredentialJSON(raw, IntlProfile)
